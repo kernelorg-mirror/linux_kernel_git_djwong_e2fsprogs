@@ -4161,6 +4161,9 @@ out:
 			com_err(argv[0], err, "while closing fs");
 		global_fs = NULL;
 	}
+	if (fctx.device)
+		free(fctx.device);
+	fuse_opt_free_args(&args);
 	return ret;
 }
 
