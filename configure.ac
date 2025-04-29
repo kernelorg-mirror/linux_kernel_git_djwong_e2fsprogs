@@ -1415,13 +1415,13 @@ AC_SUBST(FUSE_LIB)
 AC_SUBST(FUSE_CMT)
 if test "$FUSE_LIB" = "-lfuse3"
 then
-	FUSE_USE_VERSION=35
+	FUSE_USE_VERSION=314
 	CFLAGS="$CFLAGS $fuse3_CFLAGS"
 	LDFLAGS="$LDFLAGS $fuse3_LDFLAGS"
 	AC_CHECK_HEADERS([pthread.h fuse.h], [],
 		[AC_MSG_FAILURE([Cannot find fuse3 fuse2fs headers.])],
 [#define _FILE_OFFSET_BITS	64
-#define FUSE_USE_VERSION 35
+#define FUSE_USE_VERSION 314
 #ifdef __linux__
 #include <linux/fs.h>
 #include <linux/falloc.h>
