@@ -507,10 +507,10 @@ static inline int want_check_owner(struct fuse2fs *ff,
 	return !is_superuser(ff, ctxt);
 }
 
-static int check_inum_access(ext2_filsys fs, ext2_ino_t ino, mode_t mask)
+static int check_inum_access(struct fuse2fs *ff, ext2_ino_t ino, int mask)
 {
 	struct fuse_context *ctxt = fuse_get_context();
-	struct fuse2fs *ff = (struct fuse2fs *)ctxt->private_data;
+	ext2_filsys fs = ff->fs;
 	struct ext2_inode inode;
 	mode_t perms;
 	errcode_t err;
@@ -871,7 +871,7 @@ static int op_mknod(const char *path, mode_t mode, dev_t dev)
 		goto out2;
 	}
 
-	ret = check_inum_access(fs, parent, W_OK);
+	ret = check_inum_access(ff, parent, W_OK);
 	if (ret)
 		goto out2;
 
@@ -1002,7 +1002,7 @@ static int op_mkdir(const char *path, mode_t mode)
 		goto out2;
 	}
 
-	ret = check_inum_access(fs, parent, W_OK);
+	ret = check_inum_access(ff, parent, W_OK);
 	if (ret)
 		goto out2;
 
@@ -1123,7 +1123,7 @@ static int unlink_file_by_name(struct fuse2fs *ff, const char *path)
 		base_name = filename;
 	}
 
-	ret = check_inum_access(fs, dir, W_OK);
+	ret = check_inum_access(ff, dir, W_OK);
 	if (ret) {
 		free(filename);
 		return ret;
@@ -1387,7 +1387,7 @@ static int op_symlink(const char *src, const char *dest)
 		goto out2;
 	}
 
-	ret = check_inum_access(fs, parent, W_OK);
+	ret = check_inum_access(ff, parent, W_OK);
 	if (ret)
 		goto out2;
 
@@ -1560,7 +1560,7 @@ static int op_rename(const char *from, const char *to
 		goto out2;
 	}
 
-	ret = check_inum_access(fs, from_dir_ino, W_OK);
+	ret = check_inum_access(ff, from_dir_ino, W_OK);
 	if (ret)
 		goto out2;
 
@@ -1585,7 +1585,7 @@ static int op_rename(const char *from, const char *to
 		goto out2;
 	}
 
-	ret = check_inum_access(fs, to_dir_ino, W_OK);
+	ret = check_inum_access(ff, to_dir_ino, W_OK);
 	if (ret)
 		goto out2;
 
@@ -1752,7 +1752,7 @@ static int op_link(const char *src, const char *dest)
 		goto out2;
 	}
 
-	ret = check_inum_access(fs, parent, W_OK);
+	ret = check_inum_access(ff, parent, W_OK);
 	if (ret)
 		goto out2;
 
@@ -2000,7 +2000,7 @@ static int op_truncate(const char *path, off_t len
 	}
 	dbg_printf(ff, "%s: ino=%d len=%jd\n", __func__, ino, len);
 
-	ret = check_inum_access(fs, ino, W_OK);
+	ret = check_inum_access(ff, ino, W_OK);
 	if (ret)
 		goto out;
 
@@ -2075,7 +2075,7 @@ static int __op_open(struct fuse2fs *ff, const char *path,
 	}
 	dbg_printf(ff, "%s: ino=%d\n", __func__, file->ino);
 
-	ret = check_inum_access(fs, file->ino, check);
+	ret = check_inum_access(ff, file->ino, check);
 	if (ret) {
 		/*
 		 * In a regular (Linux) fs driver, the kernel will open
@@ -2087,7 +2087,7 @@ static int __op_open(struct fuse2fs *ff, const char *path,
 		 * also employ undocumented hacks (see above).
 		 */
 		if (check == R_OK) {
-			ret = check_inum_access(fs, file->ino, X_OK);
+			ret = check_inum_access(ff, file->ino, X_OK);
 			if (ret)
 				goto out;
 		} else
@@ -2384,7 +2384,7 @@ static int op_getxattr(const char *path, const char *key, char *value,
 	}
 	dbg_printf(ff, "%s: ino=%d name=%s\n", __func__, ino, key);
 
-	ret = check_inum_access(fs, ino, R_OK);
+	ret = check_inum_access(ff, ino, R_OK);
 	if (ret)
 		goto out;
 
@@ -2474,7 +2474,7 @@ static int op_listxattr(const char *path, char *names, size_t len)
 	}
 	dbg_printf(ff, "%s: ino=%d\n", __func__, ino);
 
-	ret = check_inum_access(fs, ino, R_OK);
+	ret = check_inum_access(ff, ino, R_OK);
 	if (ret)
 		goto out;
 
@@ -2554,7 +2554,7 @@ static int op_setxattr(const char *path EXT2FS_ATTR((unused)),
 	}
 	dbg_printf(ff, "%s: ino=%d name=%s\n", __func__, ino, key);
 
-	ret = check_inum_access(fs, ino, W_OK);
+	ret = check_inum_access(ff, ino, W_OK);
 	if (ret == -EACCES) {
 		ret = -EPERM;
 		goto out;
@@ -2647,7 +2647,7 @@ static int op_removexattr(const char *path, const char *key)
 	}
 	dbg_printf(ff, "%s: ino=%d name=%s\n", __func__, ino, key);
 
-	ret = check_inum_access(fs, ino, W_OK);
+	ret = check_inum_access(ff, ino, W_OK);
 	if (ret)
 		goto out;
 
@@ -2820,7 +2820,7 @@ static int op_access(const char *path, int mask)
 		goto out;
 	}
 
-	ret = check_inum_access(fs, ino, mask);
+	ret = check_inum_access(ff, ino, mask);
 	if (ret)
 		goto out;
 
@@ -2872,7 +2872,7 @@ static int op_create(const char *path, mode_t mode, struct fuse_file_info *fp)
 		goto out2;
 	}
 
-	ret = check_inum_access(fs, parent, W_OK);
+	ret = check_inum_access(ff, parent, W_OK);
 	if (ret)
 		goto out2;
 
@@ -3059,7 +3059,7 @@ static int op_utimens(const char *path, const struct timespec ctv[2]
 			(long long int)ctv[0].tv_sec, ctv[0].tv_nsec,
 			(long long int)ctv[1].tv_sec, ctv[1].tv_nsec);
 
-	ret = check_inum_access(fs, ino, W_OK);
+	ret = check_inum_access(ff, ino, W_OK);
 	if (ret)
 		goto out;
 
