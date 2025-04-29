@@ -1027,6 +1027,19 @@ static void op_destroy(void *p EXT2FS_ATTR((unused)))
 	}
 }
 
+#if FUSE_VERSION < FUSE_MAKE_VERSION(3, 17)
+static inline int fuse_set_feature_flag(struct fuse_conn_info *conn,
+					 uint64_t flag)
+{
+	if (conn->capable & flag) {
+		conn->want |= flag;
+		return 1;
+	}
+
+	return 0;
+}
+#endif
+
 static void *op_init(struct fuse_conn_info *conn
 #if FUSE_VERSION >= FUSE_MAKE_VERSION(3, 0)
 			, struct fuse_config *cfg EXT2FS_ATTR((unused))
@@ -1042,14 +1055,14 @@ static void *op_init(struct fuse_conn_info *conn
 	FUSE2FS_CHECK_CONTEXT_NULL(ff);
 	dbg_printf(ff, "%s: dev=%s\n", __func__, ff->device);
 #ifdef FUSE_CAP_IOCTL_DIR
-	conn->want |= FUSE_CAP_IOCTL_DIR;
+	fuse_set_feature_flag(conn, FUSE_CAP_IOCTL_DIR);
 #endif
 #ifdef FUSE_CAP_POSIX_ACL
 	if (ff->acl)
-		conn->want |= FUSE_CAP_POSIX_ACL;
+		fuse_set_feature_flag(conn, FUSE_CAP_POSIX_ACL);
 #endif
 #ifdef FUSE_CAP_CACHE_SYMLINKS
-	conn->want |= FUSE_CAP_CACHE_SYMLINKS;
+	fuse_set_feature_flag(conn, FUSE_CAP_CACHE_SYMLINKS);
 #endif
 #if FUSE_VERSION >= FUSE_MAKE_VERSION(3, 0)
 	conn->time_gran = 1;
@@ -1115,6 +1128,19 @@ static void *op_init(struct fuse_conn_info *conn
 		log_printf(ff, "%s %s.\n", _("mounted filesystem"), uuid);
 	}
 out:
+#if FUSE_VERSION >= FUSE_MAKE_VERSION(3, 17)
+	/*
+	 * THIS MUST GO LAST!
+	 *
+	 * The high-level libfuse code has a strange bug: it sets feature flags
+	 * in conn->want_ext, and later copies the lower 32 bits to conn->want.
+	 * If we in turn change some bits in want_ext without updating want,
+	 * the lower level library to observe that both want and want_ext have
+	 * gotten out of sync, and refuses to mount.  Therefore, synchronize
+	 * the two.
+	 */
+	conn->want = conn->want_ext & 0xFFFFFFFF;
+#endif
 	return ff;
 mount_fail:
 	ff->retcode = 32;
