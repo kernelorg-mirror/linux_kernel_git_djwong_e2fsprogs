@@ -900,6 +900,151 @@ static void fuse2fs_unmount(struct fuse2fs *ff)
 		fuse2fs_release_lockfile(ff);
 }
 
+static errcode_t fuse2fs_open(struct fuse2fs *ff, int libext2_flags)
+{
+	char options[128];
+	int flags = EXT2_FLAG_64BITS | EXT2_FLAG_THREADS | libext2_flags;
+	errcode_t err;
+
+	if (ff->lockfile) {
+		err = fuse2fs_acquire_lockfile(ff);
+		if (err)
+			return err;
+	}
+
+	snprintf(options, sizeof(options) - 1, "offset=%lu", ff->offset);
+
+	if (!ff->norecovery)
+		flags |= EXT2_FLAG_RW;
+	if (ff->directio)
+		flags |= EXT2_FLAG_DIRECT_IO;
+
+	err = ext2fs_open2(ff->device, options, flags, 0, 0, unix_io_manager,
+			   &ff->fs);
+	if (err) {
+		err_printf(ff, "%s.\n", error_message(err));
+		err_printf(ff, "%s\n", _("Please run e2fsck -fy."));
+		return err;
+	}
+
+	ff->fs->priv_data = ff;
+	ff->blocklog = u_log2(ff->fs->blocksize);
+	ff->blockmask = ff->fs->blocksize - 1;
+	return 0;
+}
+
+static errcode_t fuse2fs_config_cache(struct fuse2fs *ff)
+{
+	char buf[128];
+	errcode_t err;
+
+	snprintf(buf, sizeof(buf), "cache_blocks=%llu",
+		 FUSE2FS_B_TO_FSBT(ff, ff->cache_size));
+	err = io_channel_set_options(ff->fs->io, buf);
+	if (err) {
+		err_printf(ff, "%s %lluk: %s\n",
+			   _("cannot set disk cache size to"),
+			   ff->cache_size >> 10,
+			   error_message(err));
+		return err;
+	}
+
+	return 0;
+}
+
+static errcode_t fuse2fs_check_support(struct fuse2fs *ff)
+{
+	ext2_filsys fs = ff->fs;
+
+	if (ext2fs_has_feature_quota(fs->super)) {
+		err_printf(ff, "%s\n", _("quotas not supported."));
+		return EXT2_ET_UNSUPP_FEATURE;
+	}
+	if (ext2fs_has_feature_verity(fs->super)) {
+		err_printf(ff, "%s\n", _("verity not supported."));
+		return EXT2_ET_UNSUPP_FEATURE;
+	}
+	if (ext2fs_has_feature_encrypt(fs->super)) {
+		err_printf(ff, "%s\n", _("encryption not supported."));
+		return EXT2_ET_UNSUPP_FEATURE;
+	}
+	if (ext2fs_has_feature_casefold(fs->super)) {
+		err_printf(ff, "%s\n", _("casefolding not supported."));
+		return EXT2_ET_UNSUPP_FEATURE;
+	}
+
+	if (fs->super->s_state & EXT2_ERROR_FS) {
+		err_printf(ff, "%s\n",
+ _("Errors detected; running e2fsck is required."));
+		return EXT2_ET_FILESYSTEM_CORRUPTED;
+	}
+
+	return 0;
+}
+
+static errcode_t fuse2fs_mount(struct fuse2fs *ff)
+{
+	ext2_filsys fs = ff->fs;
+	errcode_t err;
+
+	if (ext2fs_has_feature_journal_needs_recovery(fs->super)) {
+		if (ff->norecovery) {
+			log_printf(ff, "%s\n",
+ _("Mounting read-only without recovering journal."));
+		} else {
+			log_printf(ff, "%s\n", _("Recovering journal."));
+			err = ext2fs_run_ext3_journal(&fs);
+			if (err) {
+				err_printf(ff, "%s.\n", error_message(err));
+				err_printf(ff, "%s\n",
+						_("Please run e2fsck -fy."));
+				return err;
+			}
+			ext2fs_clear_feature_journal_needs_recovery(fs->super);
+			ext2fs_mark_super_dirty(fs);
+		}
+	}
+
+	if (fs->flags & EXT2_FLAG_RW) {
+		if (ext2fs_has_feature_journal(fs->super))
+			log_printf(ff, "%s",
+ _("Warning: fuse2fs does not support using the journal.\n"
+   "There may be file system corruption or data loss if\n"
+   "the file system is not gracefully unmounted.\n"));
+		err = ext2fs_read_inode_bitmap(fs);
+		if (err) {
+			translate_error(fs, 0, err);
+			return err;
+		}
+		err = ext2fs_read_block_bitmap(fs);
+		if (err) {
+			translate_error(fs, 0, err);
+			return err;
+		}
+	}
+
+	if (!(fs->super->s_state & EXT2_VALID_FS))
+		err_printf(ff, "%s\n",
+ _("Warning: Mounting unchecked fs, running e2fsck is recommended."));
+	if (fs->super->s_max_mnt_count > 0 &&
+	    fs->super->s_mnt_count >= fs->super->s_max_mnt_count)
+		err_printf(ff, "%s\n",
+ _("Warning: Maximal mount count reached, running e2fsck is recommended."));
+	if (fs->super->s_checkinterval > 0 &&
+	    (time_t) (fs->super->s_lastcheck +
+		      fs->super->s_checkinterval) <= time(0))
+		err_printf(ff, "%s\n",
+ _("Warning: Check time reached; running e2fsck is recommended."));
+	if (fs->super->s_last_orphan)
+		err_printf(ff, "%s\n",
+ _("Orphans detected; running e2fsck is recommended."));
+
+	if (!ff->errors_behavior)
+		ff->errors_behavior = fs->super->s_errors;
+
+	return 0;
+}
+
 static void op_destroy(void *p EXT2FS_ATTR((unused)))
 {
 	struct fuse_context *ctxt = fuse_get_context();
@@ -4875,8 +5020,6 @@ int main(int argc, char *argv[])
 	FILE *orig_stderr = stderr;
 	char extra_args[BUFSIZ];
 	int ret;
-	int flags = EXT2_FLAG_64BITS | EXT2_FLAG_THREADS | EXT2_FLAG_EXCLUSIVE |
-		    EXT2_FLAG_RW;
 
 	memset(&fctx, 0, sizeof(fctx));
 	fctx.magic = FUSE2FS_MAGIC;
@@ -4921,129 +5064,36 @@ int main(int argc, char *argv[])
 		fctx.alloc_all_blocks = 1;
 	}
 
-	if (fctx.lockfile && fuse2fs_acquire_lockfile(&fctx)) {
-		ret |= 32;
-		goto out;
-	}
-
-	/* Start up the fs (while we still can use stdout) */
-	ret = 2;
-	char options[50];
-	sprintf(options, "offset=%lu", fctx.offset);
-	if (fctx.directio)
-		flags |= EXT2_FLAG_DIRECT_IO;
-	err = ext2fs_open2(fctx.device, options, flags, 0, 0, unix_io_manager,
-			   &fctx.fs);
+	err = fuse2fs_open(&fctx, EXT2_FLAG_EXCLUSIVE);
 	if (err) {
-		err_printf(&fctx, "%s.\n", error_message(err));
-		err_printf(&fctx, "%s\n", _("Please run e2fsck -fy."));
+		ret = 32;
 		goto out;
 	}
-	fctx.fs->priv_data = &fctx;
-	fctx.blocklog = u_log2(fctx.fs->blocksize);
-	fctx.blockmask = fctx.fs->blocksize - 1;
 
 	if (!fctx.cache_size)
 		fctx.cache_size = default_cache_size();
 	if (fctx.cache_size) {
-		char buf[55];
-
-		snprintf(buf, sizeof(buf), "cache_blocks=%llu",
-			 FUSE2FS_B_TO_FSBT(&fctx, fctx.cache_size));
-		err = io_channel_set_options(fctx.fs->io, buf);
+		err = fuse2fs_config_cache(&fctx);
 		if (err) {
-			err_printf(&fctx, "%s %lluk: %s\n",
-				   _("cannot set disk cache size to"),
-				   fctx.cache_size >> 10,
-				   error_message(err));
+			ret = 32;
 			goto out;
 		}
 	}
 
-	ret = 3;
-
-	if (ext2fs_has_feature_quota(fctx.fs->super)) {
-		err_printf(&fctx, "%s", _("quotas not supported."));
-		goto out;
-	}
-	if (ext2fs_has_feature_verity(fctx.fs->super)) {
-		err_printf(&fctx, "%s", _("verity not supported."));
-		goto out;
-	}
-	if (ext2fs_has_feature_encrypt(fctx.fs->super)) {
-		err_printf(&fctx, "%s", _("encryption not supported."));
-		goto out;
-	}
-	if (ext2fs_has_feature_casefold(fctx.fs->super)) {
-		err_printf(&fctx, "%s", _("casefolding not supported."));
-		goto out;
-	}
-
-	if (fctx.fs->super->s_state & EXT2_ERROR_FS) {
-		err_printf(&fctx, "%s\n",
- _("Errors detected; running e2fsck is required."));
+	err = fuse2fs_check_support(&fctx);
+	if (err) {
+		ret = 32;
 		goto out;
 	}
 
 	if (ext2fs_has_feature_shared_blocks(fctx.fs->super))
 		fctx.ro = 1;
 
-	if (ext2fs_has_feature_journal_needs_recovery(fctx.fs->super)) {
-		if (fctx.norecovery) {
-			log_printf(&fctx, "%s\n",
- _("Mounting read-only without recovering journal."));
-			fctx.ro = 1;
-			fctx.fs->flags &= ~EXT2_FLAG_RW;
-		} else {
-			log_printf(&fctx, "%s\n", _("Recovering journal."));
-			err = ext2fs_run_ext3_journal(&fctx.fs);
-			if (err) {
-				err_printf(&fctx, "%s.\n", error_message(err));
-				err_printf(&fctx, "%s\n",
-						_("Please run e2fsck -fy."));
-				goto out;
-			}
-			ext2fs_clear_feature_journal_needs_recovery(fctx.fs->super);
-			ext2fs_mark_super_dirty(fctx.fs);
-		}
+	err = fuse2fs_mount(&fctx);
+	if (err) {
+		ret = 32;
+		goto out;
 	}
-
-	if (fctx.fs->flags & EXT2_FLAG_RW) {
-		if (ext2fs_has_feature_journal(fctx.fs->super))
-			log_printf(&fctx, "%s",
- _("Warning: fuse2fs does not support using the journal.\n"
-   "There may be file system corruption or data loss if\n"
-   "the file system is not gracefully unmounted.\n"));
-		err = ext2fs_read_inode_bitmap(fctx.fs);
-		if (err) {
-			translate_error(fctx.fs, 0, err);
-			goto out;
-		}
-		err = ext2fs_read_block_bitmap(fctx.fs);
-		if (err) {
-			translate_error(fctx.fs, 0, err);
-			goto out;
-		}
-	}
-
-	if (!(fctx.fs->super->s_state & EXT2_VALID_FS))
-		err_printf(&fctx, "%s\n",
- _("Warning: Mounting unchecked fs, running e2fsck is recommended."));
-	if (fctx.fs->super->s_max_mnt_count > 0 &&
-	    fctx.fs->super->s_mnt_count >= fctx.fs->super->s_max_mnt_count)
-		err_printf(&fctx, "%s\n",
- _("Warning: Maximal mount count reached, running e2fsck is recommended."));
-	if (fctx.fs->super->s_checkinterval > 0 &&
-	    (time_t) (fctx.fs->super->s_lastcheck +
-		      fctx.fs->super->s_checkinterval) <= time(0))
-		err_printf(&fctx, "%s\n",
- _("Warning: Check time reached; running e2fsck is recommended."));
-	if (fctx.fs->super->s_last_orphan)
-		err_printf(&fctx, "%s\n",
- _("Orphans detected; running e2fsck is recommended."));
-
-	if (!fctx.errors_behavior)
-		fctx.errors_behavior = fctx.fs->super->s_errors;
 
 	/* Initialize generation counter */
 	get_random_bytes(&fctx.next_generation, sizeof(unsigned int));
