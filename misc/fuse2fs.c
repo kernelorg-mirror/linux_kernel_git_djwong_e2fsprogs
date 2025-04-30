@@ -675,6 +675,20 @@ static int check_inum_access(struct fuse2fs *ff, ext2_ino_t ino, int mask)
 	return -EACCES;
 }
 
+static void close_fs(struct fuse2fs *ff)
+{
+	errcode_t err;
+
+	if (!ff->fs)
+		return;
+
+	err = ext2fs_close(ff->fs);
+	if (err)
+		err_printf(ff, "%s\n", error_message(err));
+
+	ff->fs = NULL;
+}
+
 static void op_destroy(void *p EXT2FS_ATTR((unused)))
 {
 	struct fuse_context *ctxt = fuse_get_context();
@@ -717,7 +731,10 @@ static void op_destroy(void *p EXT2FS_ATTR((unused)))
 		char uuid[UUID_STR_SIZE];
 
 		uuid_unparse(fs->super->s_uuid, uuid);
+		close_fs(ff);
 		log_printf(ff, "%s %s.\n", _("unmounting filesystem"), uuid);
+	} else {
+		close_fs(ff);
 	}
 }
 
@@ -4723,12 +4740,7 @@ out:
  _("Mount failed while opening filesystem.  Check dmesg(1) for details."));
 		fflush(orig_stderr);
 	}
-	if (fctx.fs) {
-		err = ext2fs_close(fctx.fs);
-		if (err)
-			com_err(argv[0], err, "while closing fs");
-		fctx.fs = NULL;
-	}
+	close_fs(&fctx);
 	if (fctx.device)
 		free(fctx.device);
 	fuse_opt_free_args(&args);
