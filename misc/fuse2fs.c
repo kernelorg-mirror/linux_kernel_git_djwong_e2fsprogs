@@ -233,10 +233,13 @@ struct fuse2fs {
 	uint8_t directio;
 	uint8_t acl;
 	uint8_t dirsync;
+	uint8_t unmount_in_destroy;
+	uint8_t noblkdev;
 
 	int logfd;
 	int blocklog;
 	unsigned int blockmask;
+	int retcode;
 	unsigned long offset;
 	unsigned int next_generation;
 	unsigned long long cache_size;
@@ -941,6 +944,11 @@ static errcode_t fuse2fs_open(struct fuse2fs *ff, int libext2_flags)
 	return 0;
 }
 
+static inline bool fuse2fs_on_bdev(const struct fuse2fs *ff)
+{
+	return ff->fs->io->flags & CHANNEL_FLAGS_BLOCK_DEVICE;
+}
+
 static errcode_t fuse2fs_config_cache(struct fuse2fs *ff)
 {
 	char buf[128];
@@ -1080,9 +1088,16 @@ static void op_destroy(void *p EXT2FS_ATTR((unused)))
 	ext2_filsys fs;
 	errcode_t err;
 
+	/* Can be null if op_init is given an incorrect fuse2fs */
+	if (!ff)
+		return;
+
 	FUSE2FS_CHECK_CONTEXT_NORET(ff);
 
+	/* Can be null if opening the filesystem failed */
 	fs = fuse2fs_start(ff);
+	if (!fs)
+		goto out_unlock;
 
 	dbg_printf(ff, "%s: dev=%s\n", __func__, fs->device_name);
 	if (fs->flags & EXT2_FLAG_RW) {
@@ -1119,6 +1134,10 @@ static void op_destroy(void *p EXT2FS_ATTR((unused)))
 		log_printf(ff, "%s %s.\n", _("unmounting filesystem"), uuid);
 	}
 
+	if (ff->unmount_in_destroy)
+		fuse2fs_unmount(ff);
+
+out_unlock:
 	fuse2fs_finish(ff, 0);
 }
 
@@ -1235,8 +1254,9 @@ static void *op_init(struct fuse_conn_info *conn
 {
 	struct fuse_context *ctxt = fuse_get_context();
 	struct fuse2fs *ff = (struct fuse2fs *)ctxt->private_data;
-	ext2_filsys fs;
+	ext2_filsys fs = ff->fs;
 	errcode_t err;
+	int ret;
 
 	FUSE2FS_CHECK_CONTEXT_NULL(ff);
 
@@ -1250,8 +1270,7 @@ static void *op_init(struct fuse_conn_info *conn
 		close(ff->logfd);
 	ff->logfd = -1;
 
-	fs = ff->fs;
-	dbg_printf(ff, "%s: dev=%s\n", __func__, fs->device_name);
+	dbg_printf(ff, "%s: dev=%s\n", __func__, ff->device);
 #ifdef FUSE_CAP_IOCTL_DIR
 	conn->want |= FUSE_CAP_IOCTL_DIR;
 #endif
@@ -1269,6 +1288,46 @@ static void *op_init(struct fuse_conn_info *conn
 		cfg->debug = 1;
 	cfg->nullpath_ok = 1;
 #endif
+
+	/*
+	 * If the ext2_filsys object is null, then we are operating in fuseblk
+	 * mode and must reopen the filesystem.  If any of these steps fail,
+	 * tough.
+	 */
+	if (!fs) {
+		err = fuse2fs_open(ff, 0);
+		if (err)
+			goto mount_fail;
+		fs = ff->fs;
+
+		if (ff->cache_size) {
+			err = fuse2fs_config_cache(ff);
+			if (err)
+				goto mount_fail;
+		}
+
+		err = fuse2fs_check_support(ff);
+		if (err)
+			goto mount_fail;
+
+		if (ext2fs_has_feature_shared_blocks(fs->super)) {
+			log_printf(ff, "%s\n",
+ _("shared file blocks, mounting filesystem read-only."));
+			fs->flags &= ~EXT2_FLAG_RW;
+		}
+
+		if (ff->norecovery) {
+			ret = fuse2fs_check_norecovery(ff);
+			if (ret)
+				goto mount_fail;
+		}
+
+		err = fuse2fs_mount(ff);
+		if (err)
+			goto mount_fail;
+	}
+
+	/* Clear the valid flag so that an unclean shutdown forces a fsck */
 	if (fs->flags & EXT2_FLAG_RW) {
 		fs->super->s_mnt_count++;
 		ext2fs_set_tstamp(fs->super, s_mtime, time(NULL));
@@ -1285,7 +1344,13 @@ static void *op_init(struct fuse_conn_info *conn
 		uuid_unparse(fs->super->s_uuid, uuid);
 		log_printf(ff, "%s %s.\n", _("mounted filesystem"), uuid);
 	}
+out:
 	return ff;
+mount_fail:
+	ff->retcode = 32;
+	/* Tear down the mount immediately. */
+	fuse_exit(ctxt->fuse);
+	goto out;
 }
 
 static int stat_inode(ext2_filsys fs, ext2_ino_t ino, struct stat *statbuf)
@@ -4895,6 +4960,7 @@ static struct fuse_opt fuse2fs_opts[] = {
 #ifdef HAVE_CLOCK_MONOTONIC
 	FUSE2FS_OPT("timing",		timing,			1),
 #endif
+	FUSE2FS_OPT("noblkdev",		noblkdev,		1),
 
 	FUSE_OPT_KEY("user_xattr",	FUSE2FS_IGNORED),
 	FUSE_OPT_KEY("noblock_validity", FUSE2FS_IGNORED),
@@ -5040,6 +5106,14 @@ static unsigned long long default_cache_size(void)
 	return ret;
 }
 
+static inline bool fuse2fs_want_fuseblk(const struct fuse2fs *ff)
+{
+	if (ff->noblkdev)
+		return false;
+
+	return fuse2fs_on_bdev(ff);
+}
+
 int main(int argc, char *argv[])
 {
 	struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
@@ -5100,13 +5174,6 @@ int main(int argc, char *argv[])
 
 	if (!fctx.cache_size)
 		fctx.cache_size = default_cache_size();
-	if (fctx.cache_size) {
-		err = fuse2fs_config_cache(&fctx);
-		if (err) {
-			ret = 32;
-			goto out;
-		}
-	}
 
 	err = fuse2fs_check_support(&fctx);
 	if (err) {
@@ -5114,6 +5181,10 @@ int main(int argc, char *argv[])
 		goto out;
 	}
 
+	/*
+	 * ext4 can't do COW of shared blocks, so if the feature is enabled,
+	 * we must force ro mode.
+	 */
 	if (ext2fs_has_feature_shared_blocks(fctx.fs->super))
 		fctx.ro = 1;
 
@@ -5139,6 +5210,24 @@ int main(int argc, char *argv[])
 		 fctx.device);
 	if (fctx.no_default_opts == 0)
 		fuse_opt_add_arg(&args, extra_args);
+
+	if (fuse2fs_want_fuseblk(&fctx)) {
+		unsigned int blksize = fctx.fs->blocksize;
+
+		/*
+		 * If this is a block device, we want to close the fs and open
+		 * the fuse driver in fuseblk mode (which will reopen the block
+		 * device) so that unmount will wait until op_destroy
+		 * completes.  If this is not a block device, we cannot use
+		 * fuseblk mode and should leave the filesystem open.
+		 */
+		fuse2fs_unmount(&fctx);
+
+		/* "blkdev" is the magic mount option for fuseblk mode */
+		snprintf(extra_args, BUFSIZ, "-oblkdev,blksize=%u", blksize);
+		fuse_opt_add_arg(&args, extra_args);
+		fctx.unmount_in_destroy = 1;
+	}
 
 	if (fctx.ro)
 		fuse_opt_add_arg(&args, "-oro");
@@ -5199,6 +5288,9 @@ int main(int argc, char *argv[])
 		ret = 0;
 		break;
 	}
+
+	/* mount might have failed */
+	ret |= fctx.retcode;
 out:
 	if (ret & 1) {
 		fprintf(orig_stderr, "%s\n",
