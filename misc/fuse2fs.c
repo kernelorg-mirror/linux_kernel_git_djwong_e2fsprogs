@@ -196,9 +196,9 @@ struct fuse2fs {
 	__FUSE2FS_CHECK_CONTEXT((ff), return NULL)
 
 static int __translate_error(ext2_filsys fs, ext2_ino_t ino, errcode_t err,
-			     const char *file, int line);
+			     const char *func, int line);
 #define translate_error(fs, ino, err) __translate_error((fs), (ino), (err), \
-			__FILE__, __LINE__)
+			__func__, __LINE__)
 
 /* for macosx */
 #ifndef W_OK
@@ -5043,7 +5043,7 @@ out:
 }
 
 static int __translate_error(ext2_filsys fs, ext2_ino_t ino, errcode_t err,
-			     const char *file, int line)
+			     const char *func, int line)
 {
 	struct timespec now;
 	int ret = err;
@@ -5158,10 +5158,10 @@ no_translation:
 
 	if (ino)
 		err_printf(ff, "%s (inode #%d) at %s:%d.\n",
-			error_message(err), ino, file, line);
+			error_message(err), ino, func, line);
 	else
 		err_printf(ff, "%s at %s:%d.\n",
-			error_message(err), file, line);
+			error_message(err), func, line);
 
 	/* Make a note in the error log */
 	get_now(&now);
@@ -5169,14 +5169,14 @@ no_translation:
 	fs->super->s_last_error_ino = ino;
 	fs->super->s_last_error_line = line;
 	fs->super->s_last_error_block = err; /* Yeah... */
-	strncpy((char *)fs->super->s_last_error_func, file,
+	strncpy((char *)fs->super->s_last_error_func, func,
 		sizeof(fs->super->s_last_error_func));
 	if (ext2fs_get_tstamp(fs->super, s_first_error_time) == 0) {
 		ext2fs_set_tstamp(fs->super, s_first_error_time, now.tv_sec);
 		fs->super->s_first_error_ino = ino;
 		fs->super->s_first_error_line = line;
 		fs->super->s_first_error_block = err;
-		strncpy((char *)fs->super->s_first_error_func, file,
+		strncpy((char *)fs->super->s_first_error_func, func,
 			sizeof(fs->super->s_first_error_func));
 	}
 
