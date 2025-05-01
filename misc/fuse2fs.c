@@ -17,6 +17,7 @@
 # include <linux/fs.h>
 # include <linux/falloc.h>
 # include <linux/xattr.h>
+# include <sys/prctl.h>
 #endif
 #include <sys/ioctl.h>
 #include <unistd.h>
@@ -4791,6 +4792,20 @@ int main(int argc, char *argv[])
 			stdout = fp;
 		}
 	}
+
+#ifdef HAVE_PR_SET_IO_FLUSHER
+	/*
+	 * Register as a filesystem I/O server process so that our memory
+	 * allocations don't cause fs reclaim.
+	 */
+	ret = prctl(PR_SET_IO_FLUSHER, 1, 0, 0, 0);
+	if (ret < 0) {
+		err_printf(&fctx, "%s: %s.\n",
+ _("Could not register as IO flusher thread"),
+				strerror(errno));
+		ret = 0;
+	}
+#endif
 
 	/* Will we allow users to allocate every last block? */
 	if (getenv("FUSE2FS_ALLOC_ALL_BLOCKS")) {
