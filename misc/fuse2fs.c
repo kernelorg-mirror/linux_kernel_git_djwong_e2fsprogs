@@ -755,6 +755,12 @@ static errcode_t check_fs_supported(struct fuse2fs *ff)
 		return EXT2_ET_UNSUPP_FEATURE;
 	}
 
+	if (fs->super->s_state & EXT2_ERROR_FS) {
+		err_printf(ff, "%s\n",
+ _("Errors detected; running e2fsck is required."));
+		return EXT2_ET_FILESYSTEM_CORRUPTED;
+	}
+
 	return 0;
 }
 
@@ -830,12 +836,6 @@ _("Mounting read-only without recovering journal."));
 	if (fs->super->s_last_orphan)
 		err_printf(ff, "%s\n",
  _("Orphans detected; running e2fsck is recommended."));
-
-	if (fs->super->s_state & EXT2_ERROR_FS) {
-		err_printf(ff, "%s\n",
- _("Errors detected; running e2fsck is required."));
-		return EXT2_ET_FILESYSTEM_CORRUPTED;
-	}
 
 	return 0;
 }
