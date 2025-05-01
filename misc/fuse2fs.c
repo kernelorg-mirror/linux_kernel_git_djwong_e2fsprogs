@@ -888,6 +888,10 @@ _("Mounting read-only without recovering journal."));
 			}
 			ext2fs_clear_feature_journal_needs_recovery(fs->super);
 			ext2fs_mark_super_dirty(fs);
+
+			err = check_fs_supported(ff);
+			if (err)
+				return err;
 		}
 	}
 
