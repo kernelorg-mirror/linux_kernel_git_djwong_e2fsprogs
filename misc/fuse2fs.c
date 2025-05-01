@@ -1036,6 +1036,10 @@ static errcode_t fuse2fs_mount(struct fuse2fs *ff)
 			}
 			ext2fs_clear_feature_journal_needs_recovery(fs->super);
 			ext2fs_mark_super_dirty(fs);
+
+			err = fuse2fs_check_support(ff);
+			if (err)
+				return err;
 		}
 	}
 
