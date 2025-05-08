@@ -5166,7 +5166,7 @@ static int fuse_iomap_begin_read(struct fuse2fs *ff, ext2_ino_t ino,
 		return -ENOSYS;
 
 	/* flush dirty io_channel buffers to disk before iomap reads them */
-	err = io_channel_flush(ff->fs->io);
+	err = io_channel_flush_tag(ff->fs->io, ino);
 	if (err)
 		return translate_error(ff->fs, ino, err);
 
