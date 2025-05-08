@@ -85,6 +85,22 @@ errcode_t io_channel_read_blk64(io_channel channel, unsigned long long block,
 					     count, data);
 }
 
+errcode_t io_channel_read_tagblk(io_channel channel, io_channel_tag_t tag,
+				 unsigned long long block, int count,
+				 void *data)
+{
+	EXT2_CHECK_MAGIC(channel, EXT2_ET_MAGIC_IO_CHANNEL);
+
+	if (channel->manager->read_tagblk)
+		return (channel->manager->read_tagblk)(channel, tag, block,
+						       count, data);
+
+	if (tag != IO_CHANNEL_TAG_NULL)
+		return EXT2_ET_OP_NOT_SUPPORTED;
+
+	return io_channel_read_blk64(channel, block, count, data);
+}
+
 errcode_t io_channel_write_blk64(io_channel channel, unsigned long long block,
 				 int count, const void *data)
 {
@@ -99,6 +115,22 @@ errcode_t io_channel_write_blk64(io_channel channel, unsigned long long block,
 
 	return (channel->manager->write_blk)(channel, (unsigned long) block,
 					     count, data);
+}
+
+errcode_t io_channel_write_tagblk(io_channel channel, io_channel_tag_t tag,
+				  unsigned long long block, int count,
+				  const void *data)
+{
+	EXT2_CHECK_MAGIC(channel, EXT2_ET_MAGIC_IO_CHANNEL);
+
+	if (channel->manager->write_tagblk)
+		return (channel->manager->write_tagblk)(channel, tag, block,
+							count, data);
+
+	if (tag != IO_CHANNEL_TAG_NULL)
+		return EXT2_ET_OP_NOT_SUPPORTED;
+
+	return io_channel_write_blk64(channel, block, count, data);
 }
 
 errcode_t io_channel_discard(io_channel channel, unsigned long long block,
@@ -165,4 +197,20 @@ errcode_t io_channel_invalidate_blk(io_channel io, unsigned long long block)
 		return EXT2_ET_OP_NOT_SUPPORTED;
 
 	return io->manager->invalidate_blk(io, block);
+}
+
+errcode_t io_channel_flush_tag(io_channel io, io_channel_tag_t tag)
+{
+	if (!io->manager->flush_tag && tag != IO_CHANNEL_TAG_NULL)
+		return EXT2_ET_OP_NOT_SUPPORTED;
+
+	return io->manager->flush_tag(io, tag);
+}
+
+errcode_t io_channel_invalidate_tag(io_channel io, io_channel_tag_t tag)
+{
+	if (!io->manager->invalidate_tag && tag != IO_CHANNEL_TAG_NULL)
+		return EXT2_ET_OP_NOT_SUPPORTED;
+
+	return io->manager->invalidate_tag(io, tag);
 }
