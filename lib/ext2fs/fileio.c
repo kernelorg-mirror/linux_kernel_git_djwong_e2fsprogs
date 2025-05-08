@@ -167,7 +167,8 @@ errcode_t ext2fs_file_flush(ext2_file_t file)
 			return retval;
 	}
 
-	retval = io_channel_write_blk64(fs->io, file->physblock, 1, file->buf);
+	retval = io_channel_write_tagblk(fs->io, file->ino, file->physblock,
+					  1, file->buf);
 	if (retval)
 		return retval;
 
@@ -220,9 +221,10 @@ static errcode_t load_buffer(ext2_file_t file, int dontfill)
 		if (!dontfill) {
 			if (file->physblock &&
 			    !(ret_flags & BMAP_RET_UNINIT)) {
-				retval = io_channel_read_blk64(fs->io,
-							       file->physblock,
-							       1, file->buf);
+				retval = io_channel_read_tagblk(fs->io,
+								 file->ino,
+								 file->physblock,
+								 1, file->buf);
 				if (retval)
 					return retval;
 			} else
@@ -630,13 +632,13 @@ static errcode_t ext2fs_file_zero_past_offset(ext2_file_t file,
 		return retval;
 
 	/* Read/zero/write block */
-	retval = io_channel_read_blk64(fs->io, blk, 1, b);
+	retval = io_channel_read_tagblk(fs->io, file->ino, blk, 1, b);
 	if (retval)
 		goto out;
 
 	memset(b + off, 0, fs->blocksize - off);
 
-	retval = io_channel_write_blk64(fs->io, blk, 1, b);
+	retval = io_channel_write_tagblk(fs->io, file->ino, blk, 1, b);
 	if (retval)
 		goto out;
 

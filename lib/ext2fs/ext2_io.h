@@ -39,6 +39,11 @@ typedef struct struct_io_stats *io_stats;
 
 #define io_channel_discard_zeroes_data(i) (i->flags & CHANNEL_FLAGS_DISCARD_ZEROES)
 
+typedef unsigned int	io_channel_tag_t;
+
+/* I/O operation has no associated tag */
+#define IO_CHANNEL_TAG_NULL		(0)
+
 struct struct_io_channel {
 	errcode_t	magic;
 	io_manager	manager;
@@ -106,7 +111,15 @@ struct struct_io_manager {
 	errcode_t (*invalidate_blocks)(io_channel channel,
 				       unsigned long long block,
 				       unsigned long long count);
-	long	reserved[12];
+	errcode_t (*read_tagblk)(io_channel channel, io_channel_tag_t tag,
+				 unsigned long long block, int count,
+				 void *data);
+	errcode_t (*write_tagblk)(io_channel channel, io_channel_tag_t tag,
+				   unsigned long long block, int count,
+				   const void *data);
+	errcode_t (*flush_tag)(io_channel channel, io_channel_tag_t tag);
+	errcode_t (*invalidate_tag)(io_channel channel, io_channel_tag_t tag);
+	long	reserved[8];
 };
 
 #define IO_FLAG_RW		0x0001
@@ -135,9 +148,17 @@ extern errcode_t io_channel_write_byte(io_channel channel,
 extern errcode_t io_channel_read_blk64(io_channel channel,
 				       unsigned long long block,
 				       int count, void *data);
+extern errcode_t io_channel_read_tagblk(io_channel channel,
+					io_channel_tag_t tag,
+					unsigned long long block, int count,
+					void *data);
 extern errcode_t io_channel_write_blk64(io_channel channel,
 					unsigned long long block,
 					int count, const void *data);
+extern errcode_t io_channel_write_tagblk(io_channel channel,
+					 io_channel_tag_t tag,
+					 unsigned long long block, int count,
+					 const void *data);
 extern errcode_t io_channel_discard(io_channel channel,
 				    unsigned long long block,
 				    unsigned long long count);
@@ -153,6 +174,8 @@ extern errcode_t io_channel_fd(io_channel io, int *fd);
 extern errcode_t io_channel_invalidate_blocks(io_channel io,
 					      unsigned long long block,
 					      unsigned long long count);
+extern errcode_t io_channel_flush_tag(io_channel io, io_channel_tag_t tag);
+extern errcode_t io_channel_invalidate_tag(io_channel io, io_channel_tag_t tag);
 
 #ifdef _WIN32
 /* windows_io.c */
