@@ -1200,6 +1200,11 @@ static void *op_init(struct fuse_conn_info *conn
 			goto mount_fail;
 	}
 
+#if defined(HAVE_FUSE_IOMAP) && defined(FUSE_CAP_IOMAP_DIRECTIO)
+	if (iomap_enabled(ff))
+		fuse_set_feature_flag(conn, FUSE_CAP_IOMAP_DIRECTIO);
+#endif
+
 	/* Clear the valid flag so that an unclean shutdown forces a fsck */
 	if (ff->writable) {
 		fs->super->s_mnt_count++;
@@ -5158,7 +5163,26 @@ static int fuse_iomap_begin_read(struct fuse2fs *ff, ext2_ino_t ino,
 				 uint64_t count, uint32_t opflags,
 				 struct fuse_iomap *read_iomap)
 {
-	return -ENOSYS;
+	errcode_t err;
+
+	if (!(opflags & FUSE_IOMAP_OP_DIRECT))
+		return -ENOSYS;
+
+	/* fall back to slow path for inline data reads */
+	if (inode->i_flags & EXT4_INLINE_DATA_FL)
+		return -ENOSYS;
+
+	/* flush dirty io_channel buffers to disk before iomap reads them */
+	err = io_channel_flush(ff->fs->io);
+	if (err)
+		return translate_error(ff->fs, ino, err);
+
+	if (inode->i_flags & EXT4_EXTENTS_FL)
+		return extent_iomap_begin(ff, ino, inode, pos, count, opflags,
+					 read_iomap);
+
+	return indirect_iomap_begin(ff, ino, inode, pos, count, opflags,
+				    read_iomap);
 }
 
 static int fuse_iomap_begin_write(struct fuse2fs *ff, ext2_ino_t ino,
