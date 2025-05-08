@@ -694,11 +694,15 @@ libext2fs.so.2 libext2fs2t64 #MINVER#
  io_channel_cache_readahead@Base 1.43
  io_channel_discard@Base 1.42
  io_channel_fd@Base 1.47.3
+ io_channel_flush_tag@Base 1.47.3
  io_channel_invalidate_blk@Base 1.47.3
+ io_channel_invalidate_tag@Base 1.47.3
  io_channel_read_blk64@Base 1.41.1
+ io_channel_read_tagblk@Base 1.47.3
  io_channel_set_options@Base 1.37
  io_channel_write_blk64@Base 1.41.1
  io_channel_write_byte@Base 1.37
+ io_channel_write_tagblk@Base 1.47.3
  io_channel_zeroout@Base 1.43
  qcow2_read_header@Base 1.42
  qcow2_write_raw_image@Base 1.42
