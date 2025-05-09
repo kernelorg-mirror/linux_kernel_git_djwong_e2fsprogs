@@ -664,6 +664,23 @@ static errcode_t reuse_cache(io_channel channel,
 #define FLUSH_INVALIDATE	0x01
 #define FLUSH_NOLOCK		0x02
 
+/* Remove a block from the cache.  Dirty contents are discarded. */
+static void invalidate_cached_block(io_channel channel,
+				    struct unix_private_data *data,
+				    unsigned long long block)
+{
+	struct unix_cache	*cache;
+	int			i;
+
+	mutex_lock(data, CACHE_MTX);
+	for (i = 0, cache = data->cache; i < data->cache_size; i++, cache++) {
+		if (!cache->in_use || cache->block != block)
+			continue;
+		cache->in_use = 0;
+	}
+	mutex_unlock(data, CACHE_MTX);
+}
+
 /*
  * Flush all of the blocks in the cache
  */
@@ -1712,6 +1729,19 @@ static errcode_t unix_get_fd(io_channel channel, int *fd)
 	return 0;
 }
 
+static errcode_t unix_invalidate_blk(io_channel channel,
+				     unsigned long long block)
+{
+	struct unix_private_data *data;
+
+	EXT2_CHECK_MAGIC(channel, EXT2_ET_MAGIC_IO_CHANNEL);
+	data = (struct unix_private_data *) channel->private_data;
+	EXT2_CHECK_MAGIC(data, EXT2_ET_MAGIC_UNIX_IO_CHANNEL);
+
+	invalidate_cached_block(channel, data, block);
+	return 0;
+}
+
 #if __GNUC_PREREQ (4, 6)
 #pragma GCC diagnostic pop
 #endif
@@ -1734,6 +1764,7 @@ static struct struct_io_manager struct_unix_manager = {
 	.cache_readahead	= unix_cache_readahead,
 	.zeroout	= unix_zeroout,
 	.get_fd		= unix_get_fd,
+	.invalidate_blk	= unix_invalidate_blk,
 };
 
 io_manager unix_io_manager = &struct_unix_manager;
@@ -1756,6 +1787,7 @@ static struct struct_io_manager struct_unixfd_manager = {
 	.cache_readahead	= unix_cache_readahead,
 	.zeroout	= unix_zeroout,
 	.get_fd		= unix_get_fd,
+	.invalidate_blk	= unix_invalidate_blk,
 };
 
 io_manager unixfd_io_manager = &struct_unixfd_manager;

@@ -84,6 +84,13 @@ void ext2fs_block_alloc_stats2(ext2_filsys fs, blk64_t blk, int inuse)
 	ext2fs_mark_bb_dirty(fs);
 	if (fs->block_alloc_stats)
 		(fs->block_alloc_stats)(fs, (blk64_t) blk, inuse);
+
+	if (inuse < 0) {
+		unsigned int i;
+
+		for (i = 0; i < EXT2FS_CLUSTER_RATIO(fs); i++)
+			io_channel_invalidate_blk(fs->io, blk + i);
+	}
 }
 
 void ext2fs_block_alloc_stats(ext2_filsys fs, blk_t blk, int inuse)

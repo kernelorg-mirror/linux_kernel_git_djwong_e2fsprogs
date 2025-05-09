@@ -158,3 +158,11 @@ errcode_t io_channel_fd(io_channel io, int *fd)
 
 	return io->manager->get_fd(io, fd);
 }
+
+errcode_t io_channel_invalidate_blk(io_channel io, unsigned long long block)
+{
+	if (!io->manager->invalidate_blk)
+		return EXT2_ET_OP_NOT_SUPPORTED;
+
+	return io->manager->invalidate_blk(io, block);
+}
