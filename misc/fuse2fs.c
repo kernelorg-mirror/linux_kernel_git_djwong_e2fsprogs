@@ -4510,13 +4510,13 @@ static errcode_t clean_block_middle(struct fuse2fs *ff, ext2_ino_t ino,
 	if (!blk || (retflags & BMAP_RET_UNINIT))
 		return 0;
 
-	err = io_channel_read_blk(fs->io, blk, 1, *buf);
+	err = io_channel_read_tagblk(fs->io, ino, blk, 1, *buf);
 	if (err)
 		return err;
 
 	memset(*buf + residue, 0, len);
 
-	return io_channel_write_blk(fs->io, blk, 1, *buf);
+	return io_channel_write_tagblk(fs->io, ino, blk, 1, *buf);
 }
 
 static errcode_t clean_block_edge(struct fuse2fs *ff, ext2_ino_t ino,
@@ -4544,7 +4544,7 @@ static errcode_t clean_block_edge(struct fuse2fs *ff, ext2_ino_t ino,
 	if (err)
 		return err;
 
-	err = io_channel_read_blk(fs->io, blk, 1, *buf);
+	err = io_channel_read_tagblk(fs->io, ino, blk, 1, *buf);
 	if (err)
 		return err;
 	if (!blk || (retflags & BMAP_RET_UNINIT))
@@ -4555,7 +4555,7 @@ static errcode_t clean_block_edge(struct fuse2fs *ff, ext2_ino_t ino,
 	else
 		memset(*buf + residue, 0, fs->blocksize - residue);
 
-	return io_channel_write_blk(fs->io, blk, 1, *buf);
+	return io_channel_write_tagblk(fs->io, ino, blk, 1, *buf);
 }
 
 static int punch_helper(struct fuse_file_info *fp, int mode, off_t offset,
