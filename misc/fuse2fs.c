@@ -1032,8 +1032,14 @@ static errcode_t confirm_iomap(struct fuse_conn_info *conn, struct fuse2fs *ff)
 
 	return 0;
 }
+
+static int iomap_enabled(const struct fuse2fs *ff)
+{
+	return ff->iomap_state == IOMAP_ENABLED;
+}
 #else
 # define confirm_iomap(...)	(0)
+# define iomap_enabled(...)	(0)
 #endif
 
 static void *op_init(struct fuse_conn_info *conn
@@ -1045,6 +1051,9 @@ static void *op_init(struct fuse_conn_info *conn
 	struct fuse_context *ctxt = fuse_get_context();
 	struct fuse2fs *ff = (struct fuse2fs *)ctxt->private_data;
 	ext2_filsys fs = ff->fs;
+#ifdef HAVE_FUSE_IOMAP
+	int was_directio = ff->directio;
+#endif
 	errcode_t err;
 	int ret;
 
@@ -1067,6 +1076,15 @@ static void *op_init(struct fuse_conn_info *conn
 	if (ff->iomap_state != IOMAP_DISABLED &&
 	    fuse_set_feature_flag(conn, FUSE_CAP_IOMAP))
 		ff->iomap_state = IOMAP_ENABLED;
+	/*
+	 * In iomap mode, the kernel writes file data directly to the block
+	 * device and does not flush the bdev page cache.  We must open the
+	 * filesystem in directio mode to avoid cache coherency issues when
+	 * reading file data.  If we can't open the bdev in directio mode, we
+	 * must not use iomap.
+	 */
+	if (iomap_enabled(ff))
+		ff->directio = 1;
 #endif
 
 #if FUSE_VERSION >= FUSE_MAKE_VERSION(3, 0)
@@ -1084,6 +1102,14 @@ static void *op_init(struct fuse_conn_info *conn
 	 */
 	if (!fs) {
 		err = open_fs(ff, 0);
+#ifdef HAVE_FUSE_IOMAP
+		if (err && iomap_enabled(ff) && !was_directio) {
+			fuse_unset_feature_flag(conn, FUSE_CAP_IOMAP);
+			ff->iomap_state = IOMAP_DISABLED;
+			ff->directio = 0;
+			err = open_fs(ff, 0);
+		}
+#endif
 		if (err)
 			goto mount_fail;
 		fs = ff->fs;
