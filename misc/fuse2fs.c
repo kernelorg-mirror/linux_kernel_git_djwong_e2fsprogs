@@ -162,6 +162,7 @@ struct fuse2fs {
 	uint8_t kernel;
 	uint8_t directio;
 	uint8_t acl;
+	uint8_t dirsync;
 
 	int blocklog;
 	unsigned int blockmask;
@@ -1471,6 +1472,13 @@ static int __op_unlink(struct fuse2fs *ff, const char *path)
 	ret = remove_inode(ff, ino);
 	if (ret)
 		goto out;
+
+	/* Flush the whole mess out */
+	if (ff->dirsync) {
+		err = ext2fs_flush2(fs, 0);
+		if (err)
+			ret = translate_error(fs, 0, err);
+	}
 out:
 	return ret;
 }
@@ -1589,6 +1597,13 @@ static int __op_rmdir(struct fuse2fs *ff, const char *path)
 			ret = translate_error(fs, rds.parent, err);
 			goto out;
 		}
+	}
+
+	/* Flush the whole mess out */
+	if (ff->dirsync) {
+		err = ext2fs_flush2(fs, 0);
+		if (err)
+			ret = translate_error(fs, 0, err);
 	}
 
 out:
@@ -1963,9 +1978,11 @@ static int op_rename(const char *from, const char *to
 		goto out2;
 
 	/* Flush the whole mess out */
-	err = ext2fs_flush2(fs, 0);
-	if (err)
-		ret = translate_error(fs, 0, err);
+	if (ff->dirsync) {
+		err = ext2fs_flush2(fs, 0);
+		if (err)
+			ret = translate_error(fs, 0, err);
+	}
 
 out2:
 	free(temp_from);
@@ -2071,6 +2088,13 @@ static int op_link(const char *src, const char *dest)
 	ret = update_mtime(fs, parent, NULL);
 	if (ret)
 		goto out2;
+
+	/* Flush the whole mess out */
+	if (ff->dirsync) {
+		err = ext2fs_flush2(fs, 0);
+		if (err)
+			ret = translate_error(fs, 0, err);
+	}
 
 out2:
 	pthread_mutex_unlock(&ff->bfl);
@@ -4256,6 +4280,7 @@ enum {
 	FUSE2FS_HELP,
 	FUSE2FS_HELPFULL,
 	FUSE2FS_CACHE_SIZE,
+	FUSE2FS_DIRSYNC,
 };
 
 #define FUSE2FS_OPT(t, p, v) { t, offsetof(struct fuse2fs, p), v }
@@ -4281,6 +4306,7 @@ static struct fuse_opt fuse2fs_opts[] = {
 	FUSE_OPT_KEY("noblock_validity", FUSE2FS_IGNORED),
 	FUSE_OPT_KEY("nodelalloc",	FUSE2FS_IGNORED),
 	FUSE_OPT_KEY("cache_size=%s",	FUSE2FS_CACHE_SIZE),
+	FUSE_OPT_KEY("dirsync",		FUSE2FS_DIRSYNC),
 
 	FUSE_OPT_KEY("-V",             FUSE2FS_VERSION),
 	FUSE_OPT_KEY("--version",      FUSE2FS_VERSION),
@@ -4297,6 +4323,10 @@ static int fuse2fs_opt_proc(void *data, const char *arg,
 	struct fuse2fs *ff = data;
 
 	switch (key) {
+	case FUSE2FS_DIRSYNC:
+		ff->dirsync = 1;
+		/* pass through to libfuse */
+		return 1;
 	case FUSE_OPT_KEY_NONOPT:
 		if (!ff->device) {
 			ff->device = strdup(arg);
