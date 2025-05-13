@@ -2529,7 +2529,7 @@ static int op_getxattr(const char *path, const char *key, char *value,
 	ext2fs_free_mem(&ptr);
 out2:
 	err = ext2fs_xattrs_close(&h);
-	if (err)
+	if (err && !ret)
 		ret = translate_error(fs, ino, err);
 out:
 	pthread_mutex_unlock(&ff->bfl);
@@ -2627,7 +2627,7 @@ static int op_listxattr(const char *path, char *names, size_t len)
 	ret = bufsz;
 out2:
 	err = ext2fs_xattrs_close(&h);
-	if (err)
+	if (err && !ret)
 		ret = translate_error(fs, ino, err);
 out:
 	pthread_mutex_unlock(&ff->bfl);
@@ -2817,7 +2817,7 @@ static int op_removexattr(const char *path, const char *key)
 	ret = update_ctime(fs, ino, NULL);
 out2:
 	err = ext2fs_xattrs_close(&h);
-	if (err)
+	if (err && !ret)
 		ret = translate_error(fs, ino, err);
 out:
 	pthread_mutex_unlock(&ff->bfl);
@@ -3129,7 +3129,7 @@ out2:
 
 out:
 	pthread_mutex_unlock(&ff->bfl);
-	return 0;
+	return ret;
 }
 
 static int op_fgetattr(const char *path EXT2FS_ATTR((unused)),
