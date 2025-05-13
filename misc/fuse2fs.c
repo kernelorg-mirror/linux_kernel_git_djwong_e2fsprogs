@@ -1236,6 +1236,8 @@ static int op_getattr(const char *path, struct stat *statbuf
 		goto out;
 	ret = stat_inode(fs, ino, statbuf);
 out:
+	if (ret < 0)
+		dbg_printf(ff, "%s: libfuse ret=%d\n", __func__, ret);
 	pthread_mutex_unlock(&ff->bfl);
 	return ret;
 }
@@ -1312,6 +1314,8 @@ out2:
 	}
 
 out:
+	if (ret < 0)
+		dbg_printf(ff, "%s: libfuse ret=%d\n", __func__, ret);
 	pthread_mutex_unlock(&ff->bfl);
 	return ret;
 }
@@ -1615,6 +1619,8 @@ static int op_mknod(const char *path, mode_t mode, dev_t dev)
 		goto out2;
 
 out2:
+	if (ret < 0)
+		dbg_printf(ff, "%s: libfuse ret=%d\n", __func__, ret);
 	pthread_mutex_unlock(&ff->bfl);
 out:
 	free(temp_path);
@@ -1751,6 +1757,8 @@ static int op_mkdir(const char *path, mode_t mode)
 out3:
 	ext2fs_free_mem(&block);
 out2:
+	if (ret < 0)
+		dbg_printf(ff, "%s: libfuse ret=%d\n", __func__, ret);
 	pthread_mutex_unlock(&ff->bfl);
 out:
 	free(temp_path);
@@ -1945,6 +1953,8 @@ static int op_unlink(const char *path)
 	FUSE2FS_CHECK_CONTEXT(ff);
 	pthread_mutex_lock(&ff->bfl);
 	ret = __op_unlink(ff, path);
+	if (ret < 0)
+		dbg_printf(ff, "%s: libfuse ret=%d\n", __func__, ret);
 	pthread_mutex_unlock(&ff->bfl);
 	return ret;
 }
@@ -2069,6 +2079,8 @@ static int op_rmdir(const char *path)
 	FUSE2FS_CHECK_CONTEXT(ff);
 	pthread_mutex_lock(&ff->bfl);
 	ret = __op_rmdir(ff, path);
+	if (ret < 0)
+		dbg_printf(ff, "%s: libfuse ret=%d\n", __func__, ret);
 	pthread_mutex_unlock(&ff->bfl);
 	return ret;
 }
@@ -2174,6 +2186,8 @@ static int op_symlink(const char *src, const char *dest)
 		goto out2;
 
 out2:
+	if (ret < 0)
+		dbg_printf(ff, "%s: libfuse ret=%d\n", __func__, ret);
 	pthread_mutex_unlock(&ff->bfl);
 out:
 	free(temp_path);
@@ -2439,6 +2453,8 @@ out2:
 	free(temp_from);
 	free(temp_to);
 out:
+	if (ret < 0)
+		dbg_printf(ff, "%s: libfuse ret=%d\n", __func__, ret);
 	pthread_mutex_unlock(&ff->bfl);
 	return ret;
 }
@@ -2535,6 +2551,8 @@ static int op_link(const char *src, const char *dest)
 		goto out2;
 
 out2:
+	if (ret < 0)
+		dbg_printf(ff, "%s: libfuse ret=%d\n", __func__, ret);
 	pthread_mutex_unlock(&ff->bfl);
 out:
 	free(temp_path);
@@ -2673,6 +2691,8 @@ static int op_chmod(const char *path, mode_t mode
 	}
 
 out:
+	if (ret < 0)
+		dbg_printf(ff, "%s: libfuse ret=%d\n", __func__, ret);
 	pthread_mutex_unlock(&ff->bfl);
 	return ret;
 }
@@ -2744,6 +2764,8 @@ static int op_chown(const char *path, uid_t owner, gid_t group
 	}
 
 out:
+	if (ret < 0)
+		dbg_printf(ff, "%s: libfuse ret=%d\n", __func__, ret);
 	pthread_mutex_unlock(&ff->bfl);
 	return ret;
 }
@@ -2842,6 +2864,8 @@ static int op_truncate(const char *path, off_t len
 		goto out;
 
 out:
+	if (ret < 0)
+		dbg_printf(ff, "%s: libfuse ret=%d\n", __func__, ret);
 	pthread_mutex_unlock(&ff->bfl);
 	return ret;
 }
@@ -2959,6 +2983,8 @@ static int op_open(const char *path, struct fuse_file_info *fp)
 	FUSE2FS_CHECK_CONTEXT(ff);
 	pthread_mutex_lock(&ff->bfl);
 	ret = __op_open(ff, path, fp);
+	if (ret < 0)
+		dbg_printf(ff, "%s: libfuse ret=%d\n", __func__, ret);
 	pthread_mutex_unlock(&ff->bfl);
 	return ret;
 }
@@ -3016,6 +3042,8 @@ out2:
 			goto out;
 	}
 out:
+	if (!got && ret < 0)
+		dbg_printf(ff, "%s: libfuse ret=%d\n", __func__, ret);
 	pthread_mutex_unlock(&ff->bfl);
 	return got ? (int) got : ret;
 }
@@ -3089,6 +3117,8 @@ out2:
 		goto out;
 
 out:
+	if (!got && ret < 0)
+		dbg_printf(ff, "%s: libfuse ret=%d\n", __func__, ret);
 	pthread_mutex_unlock(&ff->bfl);
 	return got ? (int) got : ret;
 }
@@ -3119,6 +3149,8 @@ static int op_release(const char *path EXT2FS_ATTR((unused)),
 	}
 
 	fp->fh = 0;
+	if (ret < 0)
+		dbg_printf(ff, "%s: libfuse ret=%d\n", __func__, ret);
 	pthread_mutex_unlock(&ff->bfl);
 
 	ext2fs_free_mem(&fh);
@@ -3149,6 +3181,8 @@ static int op_fsync(const char *path EXT2FS_ATTR((unused)),
 		if (err)
 			ret = translate_error(fs, fh->ino, err);
 	}
+	if (ret < 0)
+		dbg_printf(ff, "%s: libfuse ret=%d\n", __func__, ret);
 	pthread_mutex_unlock(&ff->bfl);
 
 	return ret;
@@ -3272,6 +3306,8 @@ static int op_getxattr(const char *path, const char *key, char *value,
 
 	ext2fs_free_mem(&ptr);
 out:
+	if (ret < 0)
+		dbg_printf(ff, "%s: libfuse ret=%d\n", __func__, ret);
 	pthread_mutex_unlock(&ff->bfl);
 
 	return ret;
@@ -3370,6 +3406,8 @@ out2:
 	if (err && !ret)
 		ret = translate_error(fs, ino, err);
 out:
+	if (ret < 0)
+		dbg_printf(ff, "%s: libfuse ret=%d\n", __func__, ret);
 	pthread_mutex_unlock(&ff->bfl);
 
 	return ret;
@@ -3464,6 +3502,8 @@ out2:
 	if (!ret && err)
 		ret = translate_error(fs, ino, err);
 out:
+	if (ret < 0)
+		dbg_printf(ff, "%s: libfuse ret=%d\n", __func__, ret);
 	pthread_mutex_unlock(&ff->bfl);
 
 	return ret;
@@ -3560,6 +3600,8 @@ out2:
 	if (err && !ret)
 		ret = translate_error(fs, ino, err);
 out:
+	if (ret < 0)
+		dbg_printf(ff, "%s: libfuse ret=%d\n", __func__, ret);
 	pthread_mutex_unlock(&ff->bfl);
 
 	return ret;
@@ -3698,6 +3740,8 @@ static int op_readdir(const char *path EXT2FS_ATTR((unused)),
 			goto out;
 	}
 out:
+	if (ret < 0)
+		dbg_printf(ff, "%s: libfuse ret=%d\n", __func__, ret);
 	pthread_mutex_unlock(&ff->bfl);
 	return ret;
 }
@@ -3726,6 +3770,8 @@ static int op_access(const char *path, int mask)
 		goto out;
 
 out:
+	if (ret < 0)
+		dbg_printf(ff, "%s: libfuse ret=%d\n", __func__, ret);
 	pthread_mutex_unlock(&ff->bfl);
 	return ret;
 }
@@ -3855,6 +3901,8 @@ static int op_create(const char *path, mode_t mode, struct fuse_file_info *fp)
 		goto out2;
 
 out2:
+	if (ret < 0)
+		dbg_printf(ff, "%s: libfuse ret=%d\n", __func__, ret);
 	pthread_mutex_unlock(&ff->bfl);
 out:
 	free(temp_path);
@@ -3911,6 +3959,8 @@ out2:
 		goto out;
 
 out:
+	if (ret < 0)
+		dbg_printf(ff, "%s: libfuse ret=%d\n", __func__, ret);
 	pthread_mutex_unlock(&ff->bfl);
 	return ret;
 }
@@ -3932,6 +3982,8 @@ static int op_fgetattr(const char *path EXT2FS_ATTR((unused)),
 	dbg_printf(ff, "%s: ino=%d\n", __func__, fh->ino);
 	pthread_mutex_lock(&ff->bfl);
 	ret = stat_inode(fs, fh->ino, statbuf);
+	if (ret < 0)
+		dbg_printf(ff, "%s: libfuse ret=%d\n", __func__, ret);
 	pthread_mutex_unlock(&ff->bfl);
 
 	return ret;
@@ -4006,6 +4058,8 @@ static int op_utimens(const char *path, const struct timespec ctv[2]
 	}
 
 out:
+	if (ret < 0)
+		dbg_printf(ff, "%s: libfuse ret=%d\n", __func__, ret);
 	pthread_mutex_unlock(&ff->bfl);
 	return ret;
 }
@@ -4360,6 +4414,8 @@ static int op_ioctl(const char *path EXT2FS_ATTR((unused)),
 		dbg_printf(ff, "%s: Unknown ioctl %d\n", __func__, cmd);
 		ret = -ENOTTY;
 	}
+	if (ret < 0)
+		dbg_printf(ff, "%s: libfuse ret=%d\n", __func__, ret);
 	pthread_mutex_unlock(&ff->bfl);
 
 	return ret;
@@ -4393,6 +4449,8 @@ static int op_bmap(const char *path, size_t blocksize EXT2FS_ATTR((unused)),
 	}
 
 out:
+	if (ret < 0)
+		dbg_printf(ff, "%s: libfuse ret=%d\n", __func__, ret);
 	pthread_mutex_unlock(&ff->bfl);
 	return ret;
 }
@@ -4636,6 +4694,8 @@ static int op_fallocate(const char *path EXT2FS_ATTR((unused)), int mode,
 	else
 		ret = fallocate_helper(fp, mode, offset, len);
 out:
+	if (ret < 0)
+		dbg_printf(ff, "%s: libfuse ret=%d\n", __func__, ret);
 	pthread_mutex_unlock(&ff->bfl);
 
 	return ret;
