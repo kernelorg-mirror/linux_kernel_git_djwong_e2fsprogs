@@ -40,6 +40,7 @@
 # define _FILE_OFFSET_BITS 64
 #endif /* _FILE_OFFSET_BITS */
 #include <fuse.h>
+#include <fuse_lowlevel.h>
 #ifdef __SET_FOB_FOR_FUSE
 # undef _FILE_OFFSET_BITS
 #endif /* __SET_FOB_FOR_FUSE */
@@ -223,6 +224,7 @@ struct fuse2fs {
 	int blocklog;
 #ifdef HAVE_FUSE_IOMAP
 	enum fuse2fs_iomap_state iomap_state;
+	uint32_t iomap_dev;
 #endif
 	unsigned int blockmask;
 	int retcode;
@@ -4887,7 +4889,7 @@ static errcode_t extent_iomap_begin(struct fuse2fs *ff, uint64_t ino,
 	assert(extent.e_flags & EXT2_EXTENT_FLAGS_LEAF);
 
 	/* Mapping overlaps startoff, report this. */
-	iomap->dev = FUSE_IOMAP_DEV_NULL;
+	iomap->dev = ff->iomap_dev;
 	iomap->addr = FUSE2FS_FSB_TO_B(ff, extent.e_pblk);
 	iomap->offset = FUSE2FS_FSB_TO_B(ff, extent.e_lblk);
 	iomap->length = FUSE2FS_FSB_TO_B(ff, extent.e_len);
@@ -4918,13 +4920,14 @@ static int indirect_iomap_begin(struct fuse2fs *ff, uint64_t ino,
 	if (err)
 		return translate_error(fs, ino, err);
 
-	iomap->dev = FUSE_IOMAP_DEV_NULL;
 	iomap->offset = pos;
 	iomap->flags |= FUSE_IOMAP_F_MERGED;
 	if (startblock) {
+		iomap->dev = ff->iomap_dev;
 		iomap->addr = FUSE2FS_FSB_TO_B(ff, startblock);
 		iomap->type = FUSE_IOMAP_TYPE_MAPPED;
 	} else {
+		iomap->dev = FUSE_IOMAP_DEV_NULL;
 		iomap->addr = FUSE_IOMAP_NULL_ADDR;
 		iomap->type = FUSE_IOMAP_TYPE_HOLE;
 	}
@@ -4997,6 +5000,30 @@ static int fuse_iomap_begin_write(struct fuse2fs *ff, ext2_ino_t ino,
 	return -ENOSYS;
 }
 
+static errcode_t config_iomap_devices(struct fuse_context *ctxt,
+				      struct fuse2fs *ff)
+{
+	struct fuse_session *se = fuse_get_session(ctxt->fuse);
+	errcode_t err;
+	int fd;
+	int ret;
+
+	err = io_channel_fd(ff->fs->io, &fd);
+	if (err)
+		return err;
+
+	ret = fuse_iomap_add_device(se, fd, 0);
+
+	dbg_printf(ff, "%s: registering iomap dev fd=%d ret=%d iomap_dev=%u\n",
+		   __func__, fd, ret, ff->iomap_dev);
+
+	if (ret < 1)
+		return -EIO;
+
+	ff->iomap_dev = ret;
+	return 0;
+}
+
 static int op_iomap_begin(const char *path, uint64_t nodeid, uint64_t attr_ino,
 			  off_t pos, uint64_t count, uint32_t opflags,
 			  struct fuse_iomap *read_iomap,
@@ -5022,6 +5049,14 @@ static int op_iomap_begin(const char *path, uint64_t nodeid, uint64_t attr_ino,
 		   (unsigned long long)pos,
 		   (unsigned long long)count,
 		   opflags);
+
+	if (ff->iomap_dev == FUSE_IOMAP_DEV_NULL) {
+		err = config_iomap_devices(ctxt, ff);
+		if (err) {
+			ret = translate_error(fs, attr_ino, err);
+			goto out_unlock;
+		}
+	}
 
 	err = fuse2fs_read_inode(fs, attr_ino, &inode);
 	if (err) {
@@ -5357,6 +5392,7 @@ int main(int argc, char *argv[])
 		.magic = FUSE2FS_MAGIC,
 #ifdef HAVE_FUSE_IOMAP
 		.iomap_state = IOMAP_UNKNOWN,
+		.iomap_dev = FUSE_IOMAP_DEV_NULL,
 #endif
 	};
 	errcode_t err;
