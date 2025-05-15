@@ -831,6 +831,8 @@ static errcode_t open_fs(struct fuse2fs *ff, int libext2_flags)
 	if (ff->directio)
 		flags |= EXT2_FLAG_DIRECT_IO;
 
+	dbg_printf(ff, "opening with flags=0x%x\n", flags);
+
 	err = ext2fs_open2(ff->device, options, flags, 0, 0, unix_io_manager,
 			   &ff->fs);
 	if (err) {
@@ -6224,6 +6226,18 @@ int main(int argc, char *argv[])
 		ret = 32;
 		goto out;
 	}
+#ifdef HAVE_FUSE_IOMAP
+	if (is_bdev && fuse_discover_iomap()) {
+		/*
+		 * fuse-iomap guarantees that op_destroy is called before the
+		 * filesystem is unmounted, so we don't need fuseblk mode.
+		 * This save us the trouble of reopening the filesystem later,
+		 * and means that fuse2fs itself owns the exclusive lock on the
+		 * block device.
+		 */
+		is_bdev = 0;
+	}
+#endif
 
 	blksize = fctx.fs->blocksize;
 
@@ -6242,14 +6256,14 @@ int main(int argc, char *argv[])
 
 	/* Set up default fuse parameters */
 	snprintf(extra_args, BUFSIZ, "-okernel_cache,subtype=%s,"
-		 "attr_timeout=0" FUSE_PLATFORM_OPTS,
-		 get_subtype(argv[0]));
+		 "attr_timeout=0,fsname=%s" FUSE_PLATFORM_OPTS,
+		 get_subtype(argv[0]), fctx.device);
 	if (fctx.no_default_opts == 0)
 		fuse_opt_add_arg(&args, extra_args);
 
 	if (is_bdev) {
-		snprintf(extra_args, BUFSIZ, "-ofsname=%s,blkdev,blksize=%u",
-			 fctx.device, blksize);
+		snprintf(extra_args, BUFSIZ, "-oblkdev,blksize=%u",
+			 blksize);
 		fuse_opt_add_arg(&args, extra_args);
 	}
 
