@@ -982,6 +982,8 @@ static errcode_t fuse2fs_open(struct fuse2fs *ff, int libext2_flags)
 	if (ff->directio)
 		flags |= EXT2_FLAG_DIRECT_IO;
 
+	dbg_printf(ff, "opening with flags=0x%x\n", flags);
+
 	err = ext2fs_open2(ff->device, options, flags, 0, 0, unix_io_manager,
 			   &ff->fs);
 	if (err == EPERM) {
@@ -6333,9 +6335,23 @@ static unsigned long long default_cache_size(void)
 	return ret;
 }
 
+#ifdef HAVE_FUSE_IOMAP
+static inline bool fuse2fs_discover_iomap(const struct fuse2fs *ff)
+{
+	if (ff->iomap_want == FT_DISABLE)
+		return false;
+
+	return fuse_discover_iomap();
+}
+#else
+# define fuse2fs_discover_iomap(...)	(false)
+#endif
+
 static inline bool fuse2fs_want_fuseblk(const struct fuse2fs *ff)
 {
 	if (ff->noblkdev)
+		return false;
+	if (fuse2fs_discover_iomap(ff))
 		return false;
 
 	return fuse2fs_on_bdev(ff);
@@ -6499,6 +6515,12 @@ int main(int argc, char *argv[])
 		 * device) so that unmount will wait until op_destroy
 		 * completes.  If this is not a block device, we cannot use
 		 * fuseblk mode and should leave the filesystem open.
+		 *
+		 * However, fuse+iomap guarantees that op_destroy is called
+		 * before the filesystem is unmounted, so we don't need fuseblk
+		 * mode.  This save us the trouble of reopening the filesystem
+		 * later, and means that fuse2fs itself owns the exclusive lock
+		 * on the block device.
 		 */
 		fuse2fs_unmount(&fctx);
 
