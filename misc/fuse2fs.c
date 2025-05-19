@@ -1172,8 +1172,12 @@ static void *op_init(struct fuse_conn_info *conn
 	 * filesystem in directio mode to avoid cache coherency issues when
 	 * reading file data.  If we can't open the bdev in directio mode, we
 	 * must not use iomap.
+	 *
+	 * If we know that the kernel can handle all regular file IO for us,
+	 * then there is no cache coherency issue and we can use buffered reads
+	 * for all IO, which will all be filesystem metadata.
 	 */
-	if (iomap_enabled(ff))
+	if (iomap_enabled(ff) && !iomap_does_fileio(ff))
 		ff->directio = 1;
 #endif
 
