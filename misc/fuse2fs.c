@@ -5091,9 +5091,11 @@ static int fuse_iomap_begin_read(struct fuse2fs *ff, ext2_ino_t ino,
 		return -ENOSYS;
 
 	/* flush dirty io_channel buffers to disk before iomap reads them */
-	err = io_channel_flush_tag(ff->fs->io, ino);
-	if (err)
-		return translate_error(ff->fs, ino, err);
+	if (!iomap_does_fileio(ff)) {
+		err = io_channel_flush_tag(ff->fs->io, ino);
+		if (err)
+			return translate_error(ff->fs, ino, err);
+	}
 
 	if (inode->i_flags & EXT4_EXTENTS_FL)
 		return extent_iomap_begin(ff, ino, inode, pos, count, opflags,
@@ -5188,9 +5190,11 @@ static int fuse_iomap_begin_write(struct fuse2fs *ff, ext2_ino_t ino,
 	 * flush and invalidate the file's io_channel buffers before iomap
 	 * writes them
 	 */
-	err = io_channel_invalidate_tag(ff->fs->io, ino);
-	if (err)
-		return translate_error(ff->fs, ino, err);
+	if (!iomap_does_fileio(ff)) {
+		err = io_channel_invalidate_tag(ff->fs->io, ino);
+		if (err)
+			return translate_error(ff->fs, ino, err);
+	}
 
 	return 0;
 }
@@ -5685,7 +5689,7 @@ static int op_iomap_ioend(const char *path, uint64_t nodeid, uint64_t attr_ino,
 	 * flush and invalidate the file's io_channel buffers again now that
 	 * iomap wrote them
 	 */
-	if (written > 0) {
+	if (written > 0 && !iomap_does_fileio(ff)) {
 		err = io_channel_invalidate_tag(ff->fs->io, attr_ino);
 		if (err) {
 			ret = translate_error(ff->fs, attr_ino, err);
