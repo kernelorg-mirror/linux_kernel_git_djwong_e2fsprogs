@@ -3241,9 +3241,14 @@ static int fuse2fs_truncate(struct fuse2fs *ff, ext2_ino_t ino, off_t new_size)
 	ext2_file_t file;
 	__u64 old_isize;
 	errcode_t err;
+	int flags = EXT2_FILE_WRITE;
 	int ret = 0;
 
-	err = ext2fs_file_open(fs, ino, EXT2_FILE_WRITE, &file);
+	/* the kernel handles all eof zeroing for us in iomap mode */
+	if (fuse2fs_iomap_does_fileio(ff))
+		flags |= EXT2_FILE_NOBLOCKIO;
+
+	err = ext2fs_file_open(fs, ino, flags, &file);
 	if (err)
 		return translate_error(fs, ino, err);
 
@@ -3363,6 +3368,9 @@ static int __op_open(struct fuse2fs *ff, const char *path,
 		file->open_flags |= EXT2_FILE_WRITE;
 		break;
 	}
+	/* the kernel handles all block IO for us in iomap mode */
+	if (fuse2fs_iomap_does_fileio(ff))
+		file->open_flags |= EXT2_FILE_NOBLOCKIO;
 	if (fp->flags & O_APPEND) {
 		/* the kernel doesn't allow truncation of an append-only file */
 		if (fp->flags & O_TRUNC) {
