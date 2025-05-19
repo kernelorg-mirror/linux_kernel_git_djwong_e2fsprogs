@@ -1034,6 +1034,27 @@ static int propagate_default_acls(struct fuse2fs *ff, ext2_ino_t parent,
 	return ret;
 }
 
+static void set_extra_isize(struct fuse2fs *ff, ext2_ino_t ino,
+			    struct ext2_inode_large *inode)
+{
+	ext2_filsys fs = ff->fs;
+	size_t extra = sizeof(struct ext2_inode_large) -
+		EXT2_GOOD_OLD_INODE_SIZE;
+
+	if (ext2fs_has_feature_extra_isize(fs->super)) {
+		dbg_printf(ff, "%s: ino=%u extra=%zu want=%u min=%u\n",
+			   __func__, ino, extra, fs->super->s_want_extra_isize,
+			   fs->super->s_min_extra_isize);
+
+		if (fs->super->s_want_extra_isize > extra)
+			extra = fs->super->s_want_extra_isize;
+		if (fs->super->s_min_extra_isize > extra)
+			extra = fs->super->s_min_extra_isize;
+	}
+
+	inode->i_extra_isize = extra;
+}
+
 static int op_mknod(const char *path, mode_t mode, dev_t dev)
 {
 	struct fuse_context *ctxt = fuse_get_context();
@@ -1133,8 +1154,7 @@ static int op_mknod(const char *path, mode_t mode, dev_t dev)
 	else
 		inode.i_block[0] = dev;
 	inode.i_links_count = 1;
-	inode.i_extra_isize = sizeof(struct ext2_inode_large) -
-		EXT2_GOOD_OLD_INODE_SIZE;
+	set_extra_isize(ff, child, &inode);
 	inode.i_uid = ctxt->uid;
 	ext2fs_set_i_uid_high(inode, ctxt->uid >> 16);
 	inode.i_gid = ctxt->gid;
@@ -1260,6 +1280,7 @@ static int op_mkdir(const char *path, mode_t mode)
 		goto out2;
 	}
 
+	set_extra_isize(ff, child, &inode);
 	inode.i_uid = ctxt->uid;
 	ext2fs_set_i_uid_high(inode, ctxt->uid >> 16);
 	inode.i_gid = ctxt->gid;
@@ -1703,6 +1724,7 @@ static int op_symlink(const char *src, const char *dest)
 		goto out2;
 	}
 
+	set_extra_isize(ff, child, &inode);
 	inode.i_uid = ctxt->uid;
 	ext2fs_set_i_uid_high(inode, ctxt->uid >> 16);
 	inode.i_gid = ctxt->gid;
@@ -3376,8 +3398,7 @@ static int op_create(const char *path, mode_t mode, struct fuse_file_info *fp)
 	memset(&inode, 0, sizeof(inode));
 	inode.i_mode = mode;
 	inode.i_links_count = 1;
-	inode.i_extra_isize = sizeof(struct ext2_inode_large) -
-		EXT2_GOOD_OLD_INODE_SIZE;
+	set_extra_isize(ff, child, &inode);
 	inode.i_uid = ctxt->uid;
 	ext2fs_set_i_uid_high(inode, ctxt->uid >> 16);
 	inode.i_gid = ctxt->gid;
