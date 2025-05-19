@@ -4511,6 +4511,11 @@ static int ioctl_fitrim(struct fuse2fs *ff, struct fuse2fs_file_handle *fh,
 	cleared = 0;
 	max_blocks = FUSE2FS_B_TO_FSBT(ff, 2048ULL * 1024 * 1024);
 
+	/* flush any dirty data out of the disk cache before trimming */
+	err = io_channel_flush_tag(ff->fs->io, IO_CHANNEL_TAG_NULL);
+	if (err)
+		return translate_error(fs, fh->ino, err);
+
 	fr->len = 0;
 	while (start <= end) {
 		err = ext2fs_find_first_zero_block_bitmap2(fs->block_map,
@@ -4540,6 +4545,16 @@ static int ioctl_fitrim(struct fuse2fs *ff, struct fuse2fs_file_handle *fh,
 		}
 		start = b + 1;
 	}
+	if (err)
+		goto out;
+
+	/*
+	 * Invalidate the entire disk cache now that we've written zeroes so
+	 * that EXT2_ALLOCRANGE_ZERO_BLOCKS works correctly.
+	 */
+	err = io_channel_invalidate_tag(ff->fs->io, IO_CHANNEL_TAG_NULL);
+	if (err)
+		return translate_error(fs, fh->ino, err);
 
 out:
 	fr->len = FUSE2FS_FSB_TO_B(ff, cleared);
