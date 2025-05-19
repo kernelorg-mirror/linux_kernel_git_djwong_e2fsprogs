@@ -241,6 +241,7 @@ enum fuse2fs_iomap_state {
 	IOMAP_DISABLED,
 	IOMAP_UNKNOWN,
 	IOMAP_ENABLED,
+	IOMAP_FILEIO,	/* enabled and does all file data block IO */
 };
 #endif
 
@@ -555,8 +556,14 @@ static int fuse2fs_iomap_enabled(const struct fuse2fs *ff)
 {
 	return ff->iomap_state >= IOMAP_ENABLED;
 }
+
+static int fuse2fs_iomap_does_fileio(const struct fuse2fs *ff)
+{
+	return ff->iomap_state == IOMAP_FILEIO;
+}
 #else
 # define fuse2fs_iomap_enabled(...)	(0)
+# define fuse2fs_iomap_does_fileio(...)	(0)
 #endif
 
 static inline void fuse2fs_dump_extents(struct fuse2fs *ff, ext2_ino_t ino,
@@ -1385,6 +1392,7 @@ static void fuse2fs_iomap_confirm(struct fuse_conn_info *conn,
 		return;
 	case IOMAP_DISABLED:
 		return;
+	case IOMAP_FILEIO:
 	case IOMAP_ENABLED:
 		break;
 	}
@@ -1444,6 +1452,20 @@ static void *op_init(struct fuse_conn_info *conn
 	if (ff->iomap_state != IOMAP_DISABLED &&
 	    fuse_set_feature_flag(conn, FUSE_CAP_IOMAP))
 		ff->iomap_state = IOMAP_ENABLED;
+
+	/*
+	 * If iomap is turned on and the kernel advertises support for both
+	 * direct and buffered IO, then that means the kernel handles all
+	 * regular file data block IO for us.  That means we can turn off all
+	 * of libext2fs' file data block handling except for inline data.
+	 *
+	 * XXX: kernel doesn't support inline data iomap
+	 */
+	if (fuse2fs_iomap_enabled(ff) &&
+	    fuse_get_feature_flag(conn, FUSE_CAP_IOMAP_DIRECTIO) &&
+	    fuse_get_feature_flag(conn, FUSE_CAP_IOMAP_FILEIO))
+		ff->iomap_state = IOMAP_FILEIO;
+
 	/*
 	 * In iomap mode, the kernel writes file data directly to the block
 	 * device and does not flush the bdev page cache.  We must open the
@@ -4916,6 +4938,10 @@ static errcode_t clean_block_middle(struct fuse2fs *ff, ext2_ino_t ino,
 	int retflags;
 	errcode_t err;
 
+	/* the kernel does this for us in iomap mode */
+	if (fuse2fs_iomap_does_fileio(ff))
+		return 0;
+
 	if (!*buf) {
 		err = ext2fs_get_mem(fs->blocksize, buf);
 		if (err)
@@ -4948,6 +4974,10 @@ static errcode_t clean_block_edge(struct fuse2fs *ff, ext2_ino_t ino,
 	int retflags;
 	off_t residue;
 	errcode_t err;
+
+	/* the kernel does this for us in iomap mode */
+	if (fuse2fs_iomap_does_fileio(ff))
+		return 0;
 
 	residue = FUSE2FS_OFF_IN_FSB(ff, offset);
 	if (residue == 0)
