@@ -145,6 +145,9 @@ static inline uint64_t round_down(uint64_t b, unsigned int align)
 	return b - m;
 }
 
+#define max(a, b)	((a) > (b) ? (a) : (b))
+#define min(x, y)	((x) < (y) ? (y) : (x))
+
 #define dbg_printf(fuse2fs, format, ...) \
 	while ((fuse2fs)->debug) { \
 		printf("FUSE2FS (%s): " format, (fuse2fs)->shortdev, ##__VA_ARGS__); \
@@ -216,6 +219,14 @@ enum fuse2fs_opstate {
 	F2OP_SHUTDOWN,
 };
 
+#ifdef HAVE_FUSE_IOMAP
+enum fuse2fs_iomap_state {
+	IOMAP_DISABLED,
+	IOMAP_UNKNOWN,
+	IOMAP_ENABLED,
+};
+#endif
+
 /* Main program context */
 #define FUSE2FS_MAGIC		(0xEF53DEADUL)
 struct fuse2fs {
@@ -241,6 +252,9 @@ struct fuse2fs {
 
 	enum fuse2fs_opstate opstate;
 	int blocklog;
+#ifdef HAVE_FUSE_IOMAP
+	enum fuse2fs_iomap_state iomap_state;
+#endif
 	unsigned int blockmask;
 	int retcode;
 	unsigned long offset;
@@ -461,6 +475,15 @@ static inline void __fuse2fs_finish(struct fuse2fs *ff, int ret,
 	pthread_mutex_unlock(&ff->bfl);
 }
 #define fuse2fs_finish(ff, ret) __fuse2fs_finish((ff), (ret), __func__)
+
+#ifdef HAVE_FUSE_IOMAP
+static int fuse2fs_iomap_enabled(const struct fuse2fs *ff)
+{
+	return ff->iomap_state >= IOMAP_ENABLED;
+}
+#else
+# define fuse2fs_iomap_enabled(...)	(0)
+#endif
 
 static void get_now(struct timespec *now)
 {
@@ -856,7 +879,7 @@ static errcode_t fuse2fs_open(struct fuse2fs *ff, int libext2_flags)
 {
 	char options[128];
 	int flags = EXT2_FLAG_64BITS | EXT2_FLAG_THREADS | EXT2_FLAG_RW |
-		    libext2_flags;
+		    EXT2_FLAG_WRITE_FULL_SUPER | libext2_flags;
 	errcode_t err;
 
 	if (ff->lockfile) {
@@ -1105,6 +1128,30 @@ static inline int fuse_set_feature_flag(struct fuse_conn_info *conn,
 }
 #endif
 
+#ifdef HAVE_FUSE_IOMAP
+static void fuse2fs_iomap_confirm(struct fuse_conn_info *conn,
+				  struct fuse2fs *ff)
+{
+	switch (ff->iomap_state) {
+	case IOMAP_UNKNOWN:
+		ff->iomap_state = IOMAP_DISABLED;
+		return;
+	case IOMAP_DISABLED:
+		return;
+	case IOMAP_ENABLED:
+		break;
+	}
+
+	/* iomap only works with block devices */
+	if (!fuse2fs_on_bdev(ff)) {
+		fuse_unset_feature_flag(conn, FUSE_CAP_IOMAP);
+		ff->iomap_state = IOMAP_DISABLED;
+	}
+}
+#else
+# define fuse2fs_iomap_confirm(...)	((void)0)
+#endif
+
 static void *op_init(struct fuse_conn_info *conn
 #if FUSE_VERSION >= FUSE_MAKE_VERSION(3, 0)
 			, struct fuse_config *cfg EXT2FS_ATTR((unused))
@@ -1132,6 +1179,12 @@ static void *op_init(struct fuse_conn_info *conn
 #ifdef FUSE_CAP_NO_EXPORT_SUPPORT
 	fuse_set_feature_flag(conn, FUSE_CAP_NO_EXPORT_SUPPORT);
 #endif
+#ifdef HAVE_FUSE_IOMAP
+	if (ff->iomap_state != IOMAP_DISABLED &&
+	    fuse_set_feature_flag(conn, FUSE_CAP_IOMAP))
+		ff->iomap_state = IOMAP_ENABLED;
+#endif
+
 #if FUSE_VERSION >= FUSE_MAKE_VERSION(3, 0)
 	conn->time_gran = 1;
 	cfg->use_ino = 1;
@@ -1150,6 +1203,8 @@ static void *op_init(struct fuse_conn_info *conn
 		if (err)
 			goto mount_fail;
 		fs = ff->fs;
+
+		fuse2fs_iomap_confirm(conn, ff);
 
 		if (ff->cache_size) {
 			err = fuse2fs_config_cache(ff);
@@ -1176,7 +1231,16 @@ static void *op_init(struct fuse_conn_info *conn
 		err = fuse2fs_mount(ff);
 		if (err)
 			goto mount_fail;
+	} else {
+		fuse2fs_iomap_confirm(conn, ff);
 	}
+
+	/*
+	 * If we're mounting in iomap mode, we need to unmount in op_destroy
+	 * so that the block device will be released before umount(2) returns.
+	 */
+	if (fuse2fs_iomap_enabled(ff))
+		ff->unmount_in_destroy = 1;
 
 	/* Clear the valid flag so that an unclean shutdown forces a fsck */
 	if (ff->opstate == F2OP_WRITABLE) {
@@ -4734,6 +4798,424 @@ out:
 # endif /* SUPPORT_FALLOCATE */
 #endif /* FUSE 29 */
 
+#ifdef HAVE_FUSE_IOMAP
+static void fuse2fs_iomap_hole(struct fuse2fs *ff, struct fuse_iomap *iomap,
+			       off_t pos, uint64_t count)
+{
+	iomap->dev = FUSE_IOMAP_DEV_NULL;
+	iomap->addr = FUSE_IOMAP_NULL_ADDR;
+	iomap->offset = pos;
+	iomap->length = count;
+	iomap->type = FUSE_IOMAP_TYPE_HOLE;
+}
+
+static void fuse2fs_iomap_hole_to_eof(struct fuse2fs *ff,
+				      struct fuse_iomap *iomap, off_t pos,
+				      off_t count,
+				      const struct ext2_inode_large *inode)
+{
+	ext2_filsys fs = ff->fs;
+	uint64_t isize = EXT2_I_SIZE(inode);
+
+	/*
+	 * We have to be careful about handling a hole to the right of the
+	 * entire mapping tree.  First, the mapping must start and end on a
+	 * block boundary because they must be aligned to at least an LBA for
+	 * the block layer; and to the fsblock for smoother operation.
+	 *
+	 * As for the length -- we could return a mapping all the way to
+	 * i_size, but i_size could be less than pos/count if we're zeroing the
+	 * EOF block in anticipation of a truncate operation.  Similarly, we
+	 * don't want to end the mapping at pos+count because we know there's
+	 * nothing mapped byeond here.
+	 */
+	uint64_t startoff = round_down(pos, fs->blocksize);
+	uint64_t eofoff = round_up(max(pos + count, isize), fs->blocksize);
+
+	dbg_printf(ff,
+ "pos=0x%llx count=0x%llx isize=0x%llx startoff=0x%llx eofoff=0x%llx\n",
+		   (unsigned long long)pos,
+		   (unsigned long long)count,
+		   (unsigned long long)isize,
+		   (unsigned long long)startoff,
+		   (unsigned long long)eofoff);
+
+	fuse2fs_iomap_hole(ff, iomap, startoff, eofoff - startoff);
+}
+
+#define DEBUG_IOMAP
+#ifdef DEBUG_IOMAP
+# define __DUMP_EXTENT(ff, func, tag, startoff, err, extent) \
+	do { \
+		dbg_printf((ff), \
+ "%s: %s startoff 0x%llx err %ld lblk 0x%llx pblk 0x%llx len 0x%x flags 0x%x\n", \
+			   (func), (tag), (startoff), (err), (extent)->e_lblk, \
+			   (extent)->e_pblk, (extent)->e_len, \
+			   (extent)->e_flags & EXT2_EXTENT_FLAGS_UNINIT); \
+	} while(0)
+# define DUMP_EXTENT(ff, tag, startoff, err, extent) \
+	__DUMP_EXTENT((ff), __func__, (tag), (startoff), (err), (extent))
+#else
+# define __DUMP_EXTENT(...)	((void)0)
+# define DUMP_EXTENT(...)	((void)0)
+#endif
+
+static inline errcode_t __fuse2fs_get_mapping_at(struct fuse2fs *ff,
+						 ext2_extent_handle_t handle,
+						 blk64_t startoff,
+						 struct ext2fs_extent *bmap,
+						 const char *func)
+{
+	errcode_t err;
+
+	/*
+	 * Find the file mapping at startoff.  We don't check the return value
+	 * of _goto because _get will error out if _goto failed.  There's a
+	 * subtlety to the outcome of _goto when startoff falls in a sparse
+	 * hole however:
+	 *
+	 * Most of the time, _goto points the cursor at the mapping whose lblk
+	 * is just to the left of startoff.  The mapping may or may not overlap
+	 * startoff; this is ok.  In other words, the tree lookup behaves as if
+	 * we asked it to use a less than or equals comparison.
+	 *
+	 * However, if startoff is to the left of the first mapping in the
+	 * extent tree, _goto points the cursor at that first mapping because
+	 * it doesn't know how to deal with this situation.  In this case,
+	 * the tree lookup behaves as if we asked it to use a greater than
+	 * or equals comparison.
+	 *
+	 * Note: If _get() returns 'no current node', that means that there
+	 * aren't any mappings at all.
+	 */
+	ext2fs_extent_goto(handle, startoff);
+	err = ext2fs_extent_get(handle, EXT2_EXTENT_CURRENT, bmap);
+	__DUMP_EXTENT(ff, func, "lookup", startoff, err, bmap);
+	if (err == EXT2_ET_NO_CURRENT_NODE)
+		err = EXT2_ET_EXTENT_NOT_FOUND;
+	return err;
+}
+
+static inline errcode_t __fuse2fs_get_next_mapping(struct fuse2fs *ff,
+						   ext2_extent_handle_t handle,
+						   blk64_t startoff,
+						   struct ext2fs_extent *bmap,
+						   const char *func)
+{
+	struct ext2fs_extent newex, errex;
+	errcode_t err;
+
+	err = ext2fs_extent_get(handle, EXT2_EXTENT_NEXT_LEAF, &newex);
+	DUMP_EXTENT(ff, "NEXT", startoff, err, &newex);
+	if (err == EXT2_ET_EXTENT_NO_NEXT)
+		return EXT2_ET_EXTENT_NOT_FOUND;
+	if (err)
+		return err;
+
+	/*
+	 * Try to get the next leaf mapping.  There's a weird and longstanding
+	 * "feature" of EXT2_EXTENT_NEXT_LEAF where walking off the end of the
+	 * mapping recordset causes it to wrap around to the beginning of the
+	 * extent map and we end up with a mapping to the left of the one that
+	 * was passed in.
+	 *
+	 * However, a corrupt extent tree could also have such a record.  The
+	 * only way to be sure is to retrieve the mapping for the extreme right
+	 * edge of the tree and compare it to the mapping that the caller gave
+	 * us.  If they match, then we've hit the end.  If not, something is
+	 * corrupt in the ondisk metadata.
+	 */
+	if (newex.e_lblk <= bmap->e_lblk + bmap->e_len) {
+		err = __fuse2fs_get_mapping_at(ff, handle, ~0U, &errex, func);
+		if (err)
+			return err;
+
+		if (memcmp(bmap, &errex, sizeof(errex)) != 0)
+			return EXT2_ET_INODE_CORRUPTED;
+
+		return EXT2_ET_EXTENT_NOT_FOUND;
+	}
+
+	*bmap = newex;
+	return 0;
+}
+
+#define fuse2fs_get_mapping_at(ff, handle, startoff, bmap) \
+	__fuse2fs_get_mapping_at((ff), (handle), (startoff), (bmap), __func__)
+#define fuse2fs_get_next_mapping(ff, handle, startoff, bmap) \
+	__fuse2fs_get_next_mapping((ff), (handle), (startoff), (bmap), __func__)
+
+static errcode_t fuse2fs_iomap_begin_extent(struct fuse2fs *ff, uint64_t ino,
+					    struct ext2_inode_large *inode,
+					    off_t pos, uint64_t count,
+					    uint32_t opflags,
+					    struct fuse_iomap *iomap)
+{
+	ext2_extent_handle_t handle;
+	struct ext2fs_extent extent;
+	ext2_filsys fs = ff->fs;
+	const blk64_t startoff = FUSE2FS_B_TO_FSBT(ff, pos);
+	errcode_t err;
+	int ret = 0;
+
+	err = ext2fs_extent_open2(fs, ino, EXT2_INODE(inode), &handle);
+	if (err)
+		return translate_error(fs, ino, err);
+
+	err = fuse2fs_get_mapping_at(ff, handle, startoff, &extent);
+	if (err == EXT2_ET_EXTENT_NOT_FOUND) {
+		/* No mappings at all; the whole range is a hole. */
+		fuse2fs_iomap_hole_to_eof(ff, iomap, pos, count, inode);
+		goto out_handle;
+	}
+	if (err) {
+		ret = translate_error(fs, ino, err);
+		goto out_handle;
+	}
+
+	if (startoff < extent.e_lblk) {
+		/*
+		 * Mapping starts to the right of the current position.
+		 * Synthesize a hole going to that next extent.
+		 */
+		fuse2fs_iomap_hole(ff, iomap, FUSE2FS_FSB_TO_B(ff, startoff),
+				FUSE2FS_FSB_TO_B(ff, extent.e_lblk - startoff));
+		goto out_handle;
+	}
+
+	if (startoff >= extent.e_lblk + extent.e_len) {
+		/*
+		 * Mapping ends to the left of the current position.  Try to
+		 * find the next mapping.  If there is no next mapping, the
+		 * whole range is in a hole.
+		 */
+		err = fuse2fs_get_next_mapping(ff, handle, startoff, &extent);
+		if (err == EXT2_ET_EXTENT_NOT_FOUND) {
+			fuse2fs_iomap_hole_to_eof(ff, iomap, pos, count, inode);
+			goto out_handle;
+		}
+
+		/*
+		 * If the new mapping starts to the right of startoff, there's
+		 * a hole from startoff to the start of the new mapping.
+		 */
+		if (startoff < extent.e_lblk) {
+			fuse2fs_iomap_hole(ff, iomap,
+				FUSE2FS_FSB_TO_B(ff, startoff),
+				FUSE2FS_FSB_TO_B(ff, extent.e_lblk - startoff));
+			goto out_handle;
+		}
+
+		/*
+		 * The new mapping starts at startoff.  Something weird
+		 * happened in the extent tree lookup, but we found a valid
+		 * mapping so we'll run with it.
+		 */
+	}
+
+	/* Mapping overlaps startoff, report this. */
+	iomap->dev = FUSE_IOMAP_DEV_NULL;
+	iomap->addr = FUSE2FS_FSB_TO_B(ff, extent.e_pblk);
+	iomap->offset = FUSE2FS_FSB_TO_B(ff, extent.e_lblk);
+	iomap->length = FUSE2FS_FSB_TO_B(ff, extent.e_len);
+	if (extent.e_flags & EXT2_EXTENT_FLAGS_UNINIT)
+		iomap->type = FUSE_IOMAP_TYPE_UNWRITTEN;
+	else
+		iomap->type = FUSE_IOMAP_TYPE_MAPPED;
+
+out_handle:
+	ext2fs_extent_free(handle);
+	return ret;
+}
+
+static int fuse2fs_iomap_begin_indirect(struct fuse2fs *ff, uint64_t ino,
+					struct ext2_inode_large *inode,
+					off_t pos, uint64_t count,
+					uint32_t opflags,
+					struct fuse_iomap *iomap)
+{
+	ext2_filsys fs = ff->fs;
+	blk64_t startoff = FUSE2FS_B_TO_FSBT(ff, pos);
+	uint64_t real_count = min(count, 131072);
+	const blk64_t endoff = FUSE2FS_B_TO_FSB(ff, pos + real_count);
+	blk64_t startblock;
+	errcode_t err;
+
+	err = ext2fs_bmap2(fs, ino, EXT2_INODE(inode), NULL, 0, startoff, NULL,
+			   &startblock);
+	if (err)
+		return translate_error(fs, ino, err);
+
+	iomap->dev = FUSE_IOMAP_DEV_NULL;
+	iomap->offset = pos;
+	iomap->flags |= FUSE_IOMAP_F_MERGED;
+	if (startblock) {
+		iomap->addr = FUSE2FS_FSB_TO_B(ff, startblock);
+		iomap->type = FUSE_IOMAP_TYPE_MAPPED;
+	} else {
+		iomap->addr = FUSE_IOMAP_NULL_ADDR;
+		iomap->type = FUSE_IOMAP_TYPE_HOLE;
+	}
+	iomap->length = fs->blocksize;
+
+	/* See how long the mapping goes for. */
+	for (startoff++; startoff < endoff; startoff++) {
+		blk64_t prev_startblock = startblock;
+
+		err = ext2fs_bmap2(fs, ino, EXT2_INODE(inode), NULL, 0,
+				   startoff, NULL, &startblock);
+		if (err)
+			break;
+
+		if (iomap->type == FUSE_IOMAP_TYPE_MAPPED) {
+			if (startblock == prev_startblock + 1)
+				iomap->length += fs->blocksize;
+			else
+				break;
+		} else {
+			if (startblock != 0)
+				break;
+		}
+	}
+
+	return 0;
+}
+
+static int fuse2fs_iomap_begin_inline(struct fuse2fs *ff, ext2_ino_t ino,
+				      struct ext2_inode_large *inode, off_t pos,
+				      uint64_t count, struct fuse_iomap *iomap)
+{
+	uint64_t one_fsb = FUSE2FS_FSB_TO_B(ff, 1);
+
+	if (pos >= one_fsb) {
+		fuse2fs_iomap_hole_to_eof(ff, iomap, pos, count, inode);
+	} else {
+		/* ext4 only supports inline data files up to 1 fsb */
+		iomap->dev = FUSE_IOMAP_DEV_NULL;
+		iomap->addr = FUSE_IOMAP_NULL_ADDR;
+		iomap->offset = 0;
+		iomap->length = one_fsb;
+		iomap->type = FUSE_IOMAP_TYPE_INLINE;
+	}
+
+	return 0;
+}
+
+static int fuse2fs_iomap_begin_report(struct fuse2fs *ff, ext2_ino_t ino,
+				      struct ext2_inode_large *inode,
+				      off_t pos, uint64_t count,
+				      uint32_t opflags,
+				      struct fuse_iomap *read_iomap)
+{
+	if (inode->i_flags & EXT4_INLINE_DATA_FL)
+		return fuse2fs_iomap_begin_inline(ff, ino, inode, pos, count,
+						  read_iomap);
+
+	if (inode->i_flags & EXT4_EXTENTS_FL)
+		return fuse2fs_iomap_begin_extent(ff, ino, inode, pos, count,
+						  opflags, read_iomap);
+
+	return fuse2fs_iomap_begin_indirect(ff, ino, inode, pos, count,
+					    opflags, read_iomap);
+}
+
+static int fuse2fs_iomap_begin_read(struct fuse2fs *ff, ext2_ino_t ino,
+				    struct ext2_inode_large *inode, off_t pos,
+				    uint64_t count, uint32_t opflags,
+				    struct fuse_iomap *read_iomap)
+{
+	return -ENOSYS;
+}
+
+static int fuse2fs_iomap_begin_write(struct fuse2fs *ff, ext2_ino_t ino,
+				     struct ext2_inode_large *inode, off_t pos,
+				     uint64_t count, uint32_t opflags,
+				     struct fuse_iomap *read_iomap)
+{
+	return -ENOSYS;
+}
+
+static int op_iomap_begin(const char *path, uint64_t nodeid, uint64_t attr_ino,
+			  off_t pos, uint64_t count, uint32_t opflags,
+			  struct fuse_iomap *read_iomap,
+			  struct fuse_iomap *write_iomap)
+{
+	struct fuse_context *ctxt = fuse_get_context();
+	struct fuse2fs *ff = (struct fuse2fs *)ctxt->private_data;
+	struct ext2_inode_large inode;
+	ext2_filsys fs;
+	errcode_t err;
+	int ret = 0;
+
+	FUSE2FS_CHECK_CONTEXT(ff);
+
+	dbg_printf(ff,
+ "%s: path=%s nodeid=%llu attr_ino=%llu pos=0x%llx count=0x%llx opflags=0x%x\n",
+		   __func__, path,
+		   (unsigned long long)nodeid,
+		   (unsigned long long)attr_ino,
+		   (unsigned long long)pos,
+		   (unsigned long long)count,
+		   opflags);
+
+	fs = fuse2fs_start(ff);
+	err = fuse2fs_read_inode(fs, attr_ino, &inode);
+	if (err) {
+		ret = translate_error(fs, attr_ino, err);
+		goto out_unlock;
+	}
+
+	if (opflags & FUSE_IOMAP_OP_REPORT)
+		ret = fuse2fs_iomap_begin_report(ff, attr_ino, &inode, pos,
+						 count, opflags, read_iomap);
+	else if (opflags & (FUSE_IOMAP_OP_WRITE | FUSE_IOMAP_OP_ZERO))
+		ret = fuse2fs_iomap_begin_write(ff, attr_ino, &inode, pos,
+						count, opflags, read_iomap);
+	else
+		ret = fuse2fs_iomap_begin_read(ff, attr_ino, &inode, pos,
+					       count, opflags, read_iomap);
+	if (ret)
+		goto out_unlock;
+
+	dbg_printf(ff, "%s: nodeid=%llu attr_ino=%llu pos=0x%llx -> addr=0x%llx offset=0x%llx length=0x%llx type=%u\n",
+		   __func__,
+		   (unsigned long long)nodeid,
+		   (unsigned long long)attr_ino,
+		   (unsigned long long)pos,
+		   (unsigned long long)read_iomap->addr,
+		   (unsigned long long)read_iomap->offset,
+		   (unsigned long long)read_iomap->length,
+		   read_iomap->type);
+
+out_unlock:
+	fuse2fs_finish(ff, ret);
+	return ret;
+}
+
+static int op_iomap_end(const char *path, uint64_t nodeid, uint64_t attr_ino,
+			off_t pos, uint64_t count, uint32_t opflags,
+			ssize_t written, const struct fuse_iomap *iomap)
+{
+	struct fuse_context *ctxt = fuse_get_context();
+	struct fuse2fs *ff = (struct fuse2fs *)ctxt->private_data;
+
+	FUSE2FS_CHECK_CONTEXT(ff);
+
+	dbg_printf(ff,
+ "%s: path=%s nodeid=%llu attr_ino=%llu pos=0x%llx count=0x%llx opflags=0x%x written=0x%zx mapflags 0x%x\n",
+		   __func__, path,
+		   (unsigned long long)nodeid,
+		   (unsigned long long)attr_ino,
+		   (unsigned long long)pos,
+		   (unsigned long long)count,
+		   opflags,
+		   written,
+		   iomap->flags);
+
+	return 0;
+}
+#endif /* HAVE_FUSE_IOMAP */
+
 static struct fuse_operations fs_ops = {
 	.init = op_init,
 	.destroy = op_destroy,
@@ -4794,6 +5276,10 @@ static struct fuse_operations fs_ops = {
 	.fallocate = op_fallocate,
 # endif
 #endif
+#ifdef HAVE_FUSE_IOMAP
+	.iomap_begin = op_iomap_begin,
+	.iomap_end = op_iomap_end,
+#endif /* HAVE_FUSE_IOMAP */
 };
 
 static int get_random_bytes(void *p, size_t sz)
@@ -5010,16 +5496,18 @@ static void fuse2fs_com_err_proc(const char *whoami, errcode_t code,
 int main(int argc, char *argv[])
 {
 	struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
-	struct fuse2fs fctx;
+	struct fuse2fs fctx = {
+		.magic = FUSE2FS_MAGIC,
+		.opstate = F2OP_WRITABLE,
+#ifdef HAVE_FUSE_IOMAP
+		.iomap_state = IOMAP_UNKNOWN,
+#endif
+	};
 	errcode_t err;
 	FILE *orig_stderr = stderr;
 	char *logfile;
 	char extra_args[BUFSIZ];
 	int ret;
-
-	memset(&fctx, 0, sizeof(fctx));
-	fctx.magic = FUSE2FS_MAGIC;
-	fctx.opstate = F2OP_WRITABLE;
 
 	ret = fuse_opt_parse(&args, &fctx, fuse2fs_opts, fuse2fs_opt_proc);
 	if (ret)
