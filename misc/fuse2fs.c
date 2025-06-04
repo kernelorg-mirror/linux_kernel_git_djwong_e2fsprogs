@@ -278,6 +278,7 @@ struct fuse2fs {
 	enum fuse2fs_feature_toggle iomap_want;
 	enum fuse2fs_iomap_state iomap_state;
 	uint32_t iomap_dev;
+	uint8_t iomap_cache;
 #endif
 	unsigned int blockmask;
 	int retcode;
@@ -5864,6 +5865,7 @@ static int op_iomap_begin(const char *path, uint64_t nodeid, uint64_t attr_ino,
 {
 	struct fuse_context *ctxt = fuse_get_context();
 	struct fuse2fs *ff = (struct fuse2fs *)ctxt->private_data;
+	struct fuse_session *se = fuse_get_session(ctxt->fuse);
 	struct ext2_inode_large inode;
 	ext2_filsys fs;
 	errcode_t err;
@@ -5925,6 +5927,24 @@ static int op_iomap_begin(const char *path, uint64_t nodeid, uint64_t attr_ino,
 
 	if (opflags & FUSE_IOMAP_OP_ATOMIC)
 		read->flags |= FUSE_IOMAP_F_ATOMIC_BIO;
+
+	/*
+	 * Cache the mapping in the kernel so that we can reuse them for
+	 * subsequent IO.
+	 */
+	if (ff->iomap_cache) {
+		ret = fuse_lowlevel_notify_iomap_upsert(se, nodeid, attr_ino,
+							read, NULL);
+		if (ret) {
+			ret = translate_error(fs, attr_ino, -ret);
+			goto out_unlock;
+		} else {
+			/* Tell the kernel to retry from cache */
+			read->type = FUSE_IOMAP_TYPE_RETRY_CACHE;
+			read->dev = FUSE_IOMAP_DEV_NULL;
+			read->addr = FUSE_IOMAP_NULL_ADDR;
+		}
+	}
 
 out_unlock:
 	fuse2fs_finish(ff, ret);
@@ -6704,6 +6724,10 @@ static struct fuse_opt fuse2fs_opts[] = {
 	FUSE2FS_OPT("timing",		timing,			1),
 #endif
 	FUSE2FS_OPT("noblkdev",		noblkdev,		1),
+#ifdef HAVE_FUSE_IOMAP
+	FUSE2FS_OPT("iomap_cache",	iomap_cache,		1),
+	FUSE2FS_OPT("noiomap_cache",	iomap_cache,		0),
+#endif
 
 #ifdef HAVE_FUSE_IOMAP
 #ifdef MS_LAZYTIME
@@ -6935,6 +6959,7 @@ int main(int argc, char *argv[])
 		.iomap_want = FT_DEFAULT,
 		.iomap_state = IOMAP_UNKNOWN,
 		.iomap_dev = FUSE_IOMAP_DEV_NULL,
+		.iomap_cache = 1,
 #endif
 		.can_hardlink = 1,
 	};
