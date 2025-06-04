@@ -5339,6 +5339,7 @@ static int op_iomap_begin(const char *path, uint64_t nodeid, uint64_t attr_ino,
 {
 	struct fuse_context *ctxt = fuse_get_context();
 	struct fuse2fs *ff = (struct fuse2fs *)ctxt->private_data;
+	struct fuse_session *se = fuse_get_session(ctxt->fuse);
 	struct ext2_inode_large inode;
 	ext2_filsys fs;
 	errcode_t err;
@@ -5402,6 +5403,24 @@ static int op_iomap_begin(const char *path, uint64_t nodeid, uint64_t attr_ino,
 			goto out_unlock;
 		}
 	}
+
+	/*
+	 * Cache the mapping in the kernel so that we can reuse them for
+	 * subsequent IO.  Note that we have to return NULL mappings to the
+	 * kernel to prompt it to re-try the cache.
+	 */
+	write_iomap->type = FUSE_IOMAP_TYPE_NULL;
+	err = fuse_lowlevel_notify_iomap_upsert(se, nodeid, attr_ino,
+						read_iomap, write_iomap);
+	if (err) {
+		ret = translate_error(fs, attr_ino, err);
+		goto out_unlock;
+	}
+
+	/* Null out the read mapping to encourage a retry. */
+	read_iomap->type = FUSE_IOMAP_TYPE_NULL;
+	read_iomap->dev = FUSE_IOMAP_DEV_NULL;
+	read_iomap->addr = FUSE_IOMAP_NULL_ADDR;
 
 out_unlock:
 	if (ret < 0)
