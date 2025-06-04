@@ -221,6 +221,7 @@ struct fuse2fs {
 	uint8_t acl;
 	uint8_t dirsync;
 	uint8_t writable;
+	uint8_t can_hardlink;
 
 	int blocklog;
 #ifdef HAVE_FUSE_IOMAP
@@ -1296,6 +1297,32 @@ static void *op_init(struct fuse_conn_info *conn
 #if defined(HAVE_FUSE_IOMAP) && defined(FUSE_CAP_IOMAP_PAGECACHE)
 	if (iomap_enabled(ff))
 		fuse_set_feature_flag(conn, FUSE_CAP_IOMAP_PAGECACHE);
+#endif
+
+#if defined(HAVE_FUSE_IOMAP)
+	/*
+	 * XXX It turns out that fuse2fs creates internal node ids that have
+	 * nothing to do with the ext2_ino_t that we give it.  These internal
+	 * node ids are what actually gets igetted in the kernel, which means
+	 * that there can be multiple fuse_inode objects for the same fuse2fs
+	 * inode.
+	 *
+	 * What this means, horrifyingly, is that on a fuse filesystem that
+	 * supports hard links, the in-kernel i_rwsem does not protect against
+	 * concurrent writes between files that point to the same inode.  That
+	 * in turn means that the file mode and size can get desynchronized
+	 * between the multiple fuse_inode objects.  This also means that we
+	 * cannot cache iomaps in the kernel AT ALL because the caches will
+	 * get out of sync, leading to WARN_ONs from the iomap zeroing code and
+	 * probably data corruption after that.
+	 *
+	 * So for now we just disable hardlinking on iomap to see if the weird
+	 * fstests failures (particularly g/476) go away.  Long term it means
+	 * we probably have to find a way around this, like porting fuse2fs
+	 * to be a low level fuse driver.
+	 */
+	if (iomap_enabled(ff))
+		ff->can_hardlink = 0;
 #endif
 
 	/* Clear the valid flag so that an unclean shutdown forces a fsck */
@@ -2686,6 +2713,10 @@ static int op_link(const char *src, const char *dest)
 
 	FUSE2FS_CHECK_CONTEXT(ff);
 	fs = ff->fs;
+
+	if (!ff->can_hardlink)
+		return -ENOSYS;
+
 	dbg_printf(ff, "%s: src=%s dest=%s\n", __func__, src, dest);
 	temp_path = strdup(dest);
 	if (!temp_path) {
@@ -6249,6 +6280,7 @@ int main(int argc, char *argv[])
 		.iomap_state = IOMAP_UNKNOWN,
 		.iomap_dev = FUSE_IOMAP_DEV_NULL,
 #endif
+		.can_hardlink = 1,
 	};
 	errcode_t err;
 	FILE *orig_stderr = stderr;
