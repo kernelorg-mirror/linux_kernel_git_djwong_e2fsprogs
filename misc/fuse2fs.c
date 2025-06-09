@@ -4633,9 +4633,9 @@ static int __translate_error(ext2_filsys fs, ext2_ino_t ino, errcode_t err,
 	int is_err = 0;
 
 	/* Translate ext2 error to unix error code */
-	if (err < EXT2_ET_BASE)
-		goto no_translation;
 	switch (err) {
+	case 0:
+		break;
 	case EXT2_ET_NO_MEMORY:
 	case EXT2_ET_TDB_ERR_OOM:
 		ret = -ENOMEM;
@@ -4729,11 +4729,36 @@ static int __translate_error(ext2_filsys fs, ext2_ino_t ino, errcode_t err,
 		break;
 	default:
 		is_err = 1;
-		ret = -EIO;
+		/*
+		 * Sometimes we get an errcode_t that is a positive errno
+		 * value.  The kernel fuse driver wants negative errnos, so we
+		 * must do some sort of conversion.  Quoth Ted:
+		 *
+		 * "The way the com_err architecture works is that errcode_t is
+		 * a 32-bit unsigned integer, where the the top 24-bits is a
+		 * subsystem identifier.  If the subsystem identifier is zero,
+		 * then the low 8 bits is presumed to be an errno value.
+		 * Otherwise, the subsystem identifier is formed by taking a 4
+		 * character identifier from 62 valid code points A-Z, a-z,
+		 * 0-9, and _, where A is 1, and _ is 63.
+		 *
+		 * "In the case of the ext2fs library, it doesn't actually call
+		 * any AFS, Kerberos, ASN.1, etc. libraries, so in practice the
+		 * only valid error codes that we should get back are either in
+		 * the range 0..255 and EXT2_ET_BASE..EXT2_ET_BASE+255.  But at
+		 * least in theory, it's possible that in the future, libext2fs
+		 * might call some other library that might return com_err
+		 * error codes."
+		 *
+		 * https://lore.kernel.org/linux-ext4/20250612164304.GQ784455@mit.edu/T/#u
+		 *
+		 * Note that this will break horribly if Linux ever defines
+		 * errno codes exceeding 255.
+		 */
+		ret = (err < 256) ? -err : -EIO;
 		break;
 	}
 
-no_translation:
 	if (!is_err)
 		return ret;
 
