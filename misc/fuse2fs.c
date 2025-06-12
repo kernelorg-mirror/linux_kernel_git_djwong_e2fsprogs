@@ -3589,15 +3589,8 @@ static int __op_open(struct fuse2fs *ff, const char *path,
 	/* the kernel handles all block IO for us in iomap mode */
 	if (fuse2fs_iomap_does_fileio(ff))
 		file->open_flags |= EXT2_FILE_NOBLOCKIO;
-	if (fp->flags & O_APPEND) {
-		/* the kernel doesn't allow truncation of an append-only file */
-		if (fp->flags & O_TRUNC) {
-			ret = -EPERM;
-			goto out;
-		}
-
+	if (fp->flags & O_APPEND)
 		check |= A_OK;
-	}
 
 	detect_linux_executable_open(fp->flags, &check, &file->open_flags);
 
