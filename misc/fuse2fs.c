@@ -4264,11 +4264,12 @@ static int op_utimens(const char *path, const struct timespec ctv[2]
 
 	/*
 	 * ext4 allows timestamp updates of append-only files but only if we're
-	 * setting to current time
+	 * setting to current time.  If iomap is enabled, the kernel does the
+	 * permission checking for timestamp updates and we can skip the check.
 	 */
 	if (ctv[0].tv_nsec == UTIME_NOW && ctv[1].tv_nsec == UTIME_NOW)
 		access |= A_OK;
-	ret = check_inum_access(ff, ino, access);
+	ret = iomap_enabled(ff) ? 0 : check_inum_access(ff, ino, access);
 	if (ret)
 		goto out;
 
