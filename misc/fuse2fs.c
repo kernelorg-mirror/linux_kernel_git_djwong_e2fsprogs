@@ -23,6 +23,7 @@
 #include <sys/xattr.h>
 #endif
 #include <sys/ioctl.h>
+#include <sys/sysmacros.h>
 #include <unistd.h>
 #include <ctype.h>
 #define FUSE_DARWIN_ENABLE_EXTENSIONS 0
@@ -1437,6 +1438,102 @@ out:
 	pthread_mutex_unlock(&ff->bfl);
 	return ret;
 }
+
+#ifdef STATX_BASIC_STATS
+static inline void set_attrflag(struct statx *stx, uint64_t statx_flag,
+				bool set)
+{
+	if (set)
+		stx->stx_attributes |= statx_flag;
+	stx->stx_attributes_mask |= statx_flag;
+}
+
+static int statx_inode(ext2_filsys fs, ext2_ino_t ino, uint32_t statx_mask,
+		       struct statx *stx)
+{
+	struct ext2_inode_large inode;
+	dev_t fakedev = 0;
+	errcode_t err;
+	struct timespec tv;
+
+	err = fuse2fs_read_inode(fs, ino, &inode);
+	if (err)
+		return translate_error(fs, ino, err);
+
+	memcpy(&fakedev, fs->super->s_uuid, sizeof(fakedev));
+	stx->stx_mask = STATX_BASIC_STATS | STATX_BTIME;
+	stx->stx_dev_major = major(fakedev);
+	stx->stx_dev_minor = minor(fakedev);
+	stx->stx_ino = ino;
+	stx->stx_mode = inode.i_mode;
+	stx->stx_nlink = inode.i_links_count;
+	stx->stx_uid = inode_uid(inode);
+	stx->stx_gid = inode_gid(inode);
+	stx->stx_size = EXT2_I_SIZE(&inode);
+	stx->stx_blksize = fs->blocksize;
+	stx->stx_blocks = ext2fs_get_stat_i_blocks(fs,
+						EXT2_INODE(&inode));
+	EXT4_INODE_GET_XTIME(i_atime, &tv, &inode);
+	stx->stx_atime.tv_sec = tv.tv_sec;
+	stx->stx_atime.tv_nsec = tv.tv_nsec;
+
+	EXT4_INODE_GET_XTIME(i_mtime, &tv, &inode);
+	stx->stx_mtime.tv_sec = tv.tv_sec;
+	stx->stx_mtime.tv_nsec = tv.tv_nsec;
+
+	EXT4_INODE_GET_XTIME(i_ctime, &tv, &inode);
+	stx->stx_ctime.tv_sec = tv.tv_sec;
+	stx->stx_ctime.tv_nsec = tv.tv_nsec;
+
+	EXT4_INODE_GET_XTIME(i_crtime, &tv, &inode);
+	stx->stx_btime.tv_sec = tv.tv_sec;
+	stx->stx_btime.tv_nsec = tv.tv_nsec;
+
+	if (LINUX_S_ISCHR(inode.i_mode) ||
+	    LINUX_S_ISBLK(inode.i_mode)) {
+		if (inode.i_block[0]) {
+			stx->stx_rdev_major = major(inode.i_block[0]);
+			stx->stx_rdev_minor = minor(inode.i_block[0]);
+		} else {
+			stx->stx_rdev_major = major(inode.i_block[1]);
+			stx->stx_rdev_minor = minor(inode.i_block[1]);
+		}
+	}
+
+	set_attrflag(stx, STATX_ATTR_COMPRESSED, inode.i_flags & EXT2_COMPR_FL);
+	set_attrflag(stx, STATX_ATTR_IMMUTABLE,
+					inode.i_flags & EXT2_IMMUTABLE_FL);
+	set_attrflag(stx, STATX_ATTR_APPEND, inode.i_flags & EXT2_APPEND_FL);
+	set_attrflag(stx, STATX_ATTR_NODUMP, inode.i_flags & EXT2_NODUMP_FL);
+
+	return 0;
+}
+
+static int op_statx(const char *path, uint32_t statx_flags, uint32_t statx_mask,
+		    struct statx *stx, struct fuse_file_info *fi)
+{
+	struct fuse_context *ctxt = fuse_get_context();
+	struct fuse2fs *ff = (struct fuse2fs *)ctxt->private_data;
+	ext2_filsys fs;
+	ext2_ino_t ino;
+	int ret = 0;
+
+	FUSE2FS_CHECK_CONTEXT(ff);
+	fs = ff->fs;
+	pthread_mutex_lock(&ff->bfl);
+	ret = path_or_file_info_to_ino(ff, path, fi, &ino);
+	if (ret)
+		goto out;
+	ret = statx_inode(fs, ino, statx_mask, stx);
+out:
+	if (ret < 0)
+		dbg_printf(ff, "%s: libfuse ret=%d\n", __func__, ret);
+	pthread_mutex_unlock(&ff->bfl);
+	return ret;
+}
+#else
+# define op_statx		NULL
+#endif
 
 static int op_readlink(const char *path, char *buf, size_t len)
 {
@@ -5943,6 +6040,7 @@ static struct fuse_operations fs_ops = {
 	.iomap_begin = op_iomap_begin,
 	.iomap_end = op_iomap_end,
 	.iomap_ioend = op_iomap_ioend,
+	.statx = op_statx,
 #endif /* HAVE_FUSE_IOMAP */
 };
 
