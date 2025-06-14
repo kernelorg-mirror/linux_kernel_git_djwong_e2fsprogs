@@ -4982,6 +4982,44 @@ out:
 # endif /* SUPPORT_FALLOCATE */
 #endif /* FUSE 29 */
 
+#if FUSE_VERSION >= FUSE_MAKE_VERSION(3, 18)
+static int op_syncfs(const char *path)
+{
+	struct fuse_context *ctxt = fuse_get_context();
+	struct fuse2fs *ff = (struct fuse2fs *)ctxt->private_data;
+	ext2_filsys fs;
+	errcode_t err;
+	int ret = 0;
+
+	FUSE2FS_CHECK_CONTEXT(ff);
+	fs = ff->fs;
+	pthread_mutex_lock(&ff->bfl);
+
+	dbg_printf(ff, "%s: path=%s\n", __func__, path);
+
+	if (ff->writable) {
+		if (fs->super->s_error_count)
+			fs->super->s_state |= EXT2_ERROR_FS;
+		ext2fs_mark_super_dirty(fs);
+		err = ext2fs_set_gdt_csum(fs);
+		if (err) {
+			ret = translate_error(fs, 0, err);
+			goto out_unlock;
+		}
+
+		err = ext2fs_flush2(fs, 0);
+		if (err) {
+			ret = translate_error(fs, 0, err);
+			goto out_unlock;
+		}
+	}
+
+out_unlock:
+	pthread_mutex_unlock(&ff->bfl);
+	return ret;
+}
+#endif
+
 #ifdef HAVE_FUSE_IOMAP
 static void handle_iomap_hole(struct fuse2fs *ff, struct fuse_iomap *iomap,
 			      off_t pos, uint64_t count)
@@ -6074,6 +6112,9 @@ static struct fuse_operations fs_ops = {
 # ifdef SUPPORT_FALLOCATE
 	.fallocate = op_fallocate,
 # endif
+#endif
+#if FUSE_VERSION >= FUSE_MAKE_VERSION(3, 18)
+	.syncfs = op_syncfs,
 #endif
 #ifdef HAVE_FUSE_IOMAP
 	.iomap_begin = op_iomap_begin,
