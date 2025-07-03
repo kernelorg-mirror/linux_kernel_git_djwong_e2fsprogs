@@ -1844,17 +1844,43 @@ static errcode_t unix_get_fd(io_channel channel, int *fd)
 	return 0;
 }
 
+static int __unix_dropcache(int fd, off_t offset, off_t len)
+{
+	int ret = -1;
+
+#if defined(POSIX_FADV_DONTNEED)
+	ret = posix_fadvise(fd, offset, len, POSIX_FADV_DONTNEED);
+	if (ret == 0)
+		return 0;
+#endif
+#if defined(HAVE_FALLOCATE) && defined(FALLOC_FL_PUNCH_HOLE) && defined(FALLOC_FL_KEEP_SIZE)
+	ret = fallocate(fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE,
+			offset,  len);
+	if (ret == 0)
+		return 0;
+#endif
+	errno = EOPNOTSUPP;
+	return ret;
+}
+
 static errcode_t unix_invalidate_blocks(io_channel channel,
 					unsigned long long block,
 					unsigned long long count)
 {
 	struct unix_private_data *data;
+	errcode_t ret;
 
 	EXT2_CHECK_MAGIC(channel, EXT2_ET_MAGIC_IO_CHANNEL);
 	data = (struct unix_private_data *) channel->private_data;
 	EXT2_CHECK_MAGIC(data, EXT2_ET_MAGIC_UNIX_IO_CHANNEL);
 
 	invalidate_cached_blocks(channel, data, block, count);
+
+	ret = __unix_dropcache(data->dev,
+			(off_t)(block) * channel->block_size + data->offset,
+			(off_t)(count) * channel->block_size);
+	if (ret && errno != EOPNOTSUPP)
+		return errno;
 	return 0;
 }
 
