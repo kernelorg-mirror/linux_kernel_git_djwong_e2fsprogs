@@ -4762,6 +4762,12 @@ int main(int argc, char *argv[])
 		goto out;
 	}
 
+	if (global_fs->super->s_state & EXT2_ERROR_FS) {
+		err_printf(&fctx, "%s\n",
+ _("Errors detected; running e2fsck is required."));
+		goto out;
+	}
+
 	if (ext2fs_has_feature_shared_blocks(global_fs->super))
 		fctx.ro = 1;
 
@@ -4818,12 +4824,6 @@ int main(int argc, char *argv[])
 	if (global_fs->super->s_last_orphan)
 		err_printf(&fctx, "%s\n",
  _("Orphans detected; running e2fsck is recommended."));
-
-	if (global_fs->super->s_state & EXT2_ERROR_FS) {
-		err_printf(&fctx, "%s\n",
- _("Errors detected; running e2fsck is required."));
-		goto out;
-	}
 
 	/* Initialize generation counter */
 	get_random_bytes(&fctx.next_generation, sizeof(unsigned int));
