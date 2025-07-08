@@ -774,6 +774,54 @@ static int check_inum_access(struct fuse2fs *ff, ext2_ino_t ino, int mask)
 	return -EACCES;
 }
 
+static errcode_t fuse2fs_acquire_lockfile(struct fuse2fs *ff)
+{
+	char *resolved;
+	int lockfd;
+	errcode_t err;
+
+	lockfd = open(ff->lockfile, O_RDWR | O_CREAT | O_EXCL, 0400);
+	if (lockfd < 0) {
+		if (errno == EEXIST)
+			err = EWOULDBLOCK;
+		else
+			err = errno;
+		err_printf(ff, "%s: %s: %s\n", ff->lockfile,
+			   _("opening lockfile failed"),
+			   strerror(err));
+		ff->lockfile = NULL;
+		return err;
+	}
+	close(lockfd);
+
+	resolved = realpath(ff->lockfile, NULL);
+	if (!resolved) {
+		err = errno;
+		err_printf(ff, "%s: %s: %s\n", ff->lockfile,
+			   _("resolving lockfile failed"),
+			   strerror(err));
+		unlink(ff->lockfile);
+		ff->lockfile = NULL;
+		return err;
+	}
+	free(ff->lockfile);
+	ff->lockfile = resolved;
+
+	return 0;
+}
+
+static void fuse2fs_release_lockfile(struct fuse2fs *ff)
+{
+	if (unlink(ff->lockfile)) {
+		errcode_t err = errno;
+
+		err_printf(ff, "%s: %s: %s\n", ff->lockfile,
+			   _("removing lockfile failed"),
+			   strerror(err));
+	}
+	free(ff->lockfile);
+}
+
 static void op_destroy(void *p EXT2FS_ATTR((unused)))
 {
 	struct fuse_context *ctxt = fuse_get_context();
@@ -4683,38 +4731,9 @@ int main(int argc, char *argv[])
 		fctx.alloc_all_blocks = 1;
 	}
 
-	if (fctx.lockfile) {
-		char *resolved;
-		int lockfd;
-
-		lockfd = open(fctx.lockfile, O_RDWR | O_CREAT | O_EXCL, 0400);
-		if (lockfd < 0) {
-			if (errno == EEXIST)
-				err = EWOULDBLOCK;
-			else
-				err = errno;
-			err_printf(&fctx, "%s: %s: %s\n", fctx.lockfile,
-				   _("opening lockfile failed"),
-				   strerror(err));
-			fctx.lockfile = NULL;
-			ret |= 32;
-			goto out;
-		}
-		close(lockfd);
-
-		resolved = realpath(fctx.lockfile, NULL);
-		if (!resolved) {
-			err = errno;
-			err_printf(&fctx, "%s: %s: %s\n", fctx.lockfile,
-				   _("resolving lockfile failed"),
-				   strerror(err));
-			unlink(fctx.lockfile);
-			fctx.lockfile = NULL;
-			ret |= 32;
-			goto out;
-		}
-		free(fctx.lockfile);
-		fctx.lockfile = resolved;
+	if (fctx.lockfile && fuse2fs_acquire_lockfile(&fctx)) {
+		ret |= 32;
+		goto out;
 	}
 
 	/* Start up the fs (while we still can use stdout) */
@@ -4923,15 +4942,8 @@ out:
 			com_err(argv[0], err, "while closing fs");
 		fctx.fs = NULL;
 	}
-	if (fctx.lockfile) {
-		if (unlink(fctx.lockfile)) {
-			err = errno;
-			err_printf(&fctx, "%s: %s: %s\n", fctx.lockfile,
-				   _("removing lockfile failed"),
-				   strerror(err));
-		}
-		free(fctx.lockfile);
-	}
+	if (fctx.lockfile)
+		fuse2fs_release_lockfile(&fctx);
 	if (fctx.device)
 		free(fctx.device);
 	fuse_opt_free_args(&args);
