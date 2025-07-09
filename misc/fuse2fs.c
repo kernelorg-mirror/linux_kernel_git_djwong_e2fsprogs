@@ -1407,6 +1407,14 @@ static void *op_init(struct fuse_conn_info *conn
 	if (fuse2fs_iomap_enabled(ff)) {
 		ff->unmount_in_destroy = 1;
 		ff->can_hardlink = 0;
+
+		/*
+		 * XXX: inline data file io depends on op_read/write being fed
+		 * a path, so we have to slow everyone down to look up the path
+		 * from the nodeid
+		 */
+		if (ext2fs_has_feature_inline_data(ff->fs->super))
+			cfg->nullpath_ok = 0;
 	}
 
 	/* Clear the valid flag so that an unclean shutdown forces a fsck */
@@ -3294,6 +3302,9 @@ static int op_read(const char *path EXT2FS_ATTR((unused)), char *buf,
 		   size_t len, off_t offset,
 		   struct fuse_file_info *fp)
 {
+	struct fuse2fs_file_handle fhurk = {
+		.magic = FUSE2FS_FILE_MAGIC,
+	};
 	struct fuse_context *ctxt = fuse_get_context();
 	struct fuse2fs *ff = (struct fuse2fs *)ctxt->private_data;
 	struct fuse2fs_file_handle *fh =
@@ -3305,10 +3316,21 @@ static int op_read(const char *path EXT2FS_ATTR((unused)), char *buf,
 	int ret = 0;
 
 	FUSE2FS_CHECK_CONTEXT(ff);
+
+	if (!fh)
+		fh = &fhurk;
+
 	FUSE2FS_CHECK_HANDLE(ff, fh);
 	dbg_printf(ff, "%s: ino=%d off=%jd len=%jd\n", __func__, fh->ino,
 		   (intmax_t) offset, len);
 	fs = fuse2fs_start(ff);
+
+	if (fh == &fhurk) {
+		ret = fuse2fs_file_ino(ff, path, NULL, &fhurk.ino);
+		if (ret)
+			goto out;
+	}
+
 	err = ext2fs_file_open(fs, fh->ino, fh->open_flags, &efp);
 	if (err) {
 		ret = translate_error(fs, fh->ino, err);
@@ -3350,6 +3372,10 @@ static int op_write(const char *path EXT2FS_ATTR((unused)),
 		    const char *buf, size_t len, off_t offset,
 		    struct fuse_file_info *fp)
 {
+	struct fuse2fs_file_handle fhurk = {
+		.magic = FUSE2FS_FILE_MAGIC,
+		.open_flags = EXT2_FILE_WRITE,
+	};
 	struct fuse_context *ctxt = fuse_get_context();
 	struct fuse2fs *ff = (struct fuse2fs *)ctxt->private_data;
 	struct fuse2fs_file_handle *fh =
@@ -3361,6 +3387,10 @@ static int op_write(const char *path EXT2FS_ATTR((unused)),
 	int ret = 0;
 
 	FUSE2FS_CHECK_CONTEXT(ff);
+
+	if (!fh)
+		fh = &fhurk;
+
 	FUSE2FS_CHECK_HANDLE(ff, fh);
 	dbg_printf(ff, "%s: ino=%d off=%jd len=%jd\n", __func__, fh->ino,
 		   (intmax_t) offset, (intmax_t) len);
@@ -3373,6 +3403,12 @@ static int op_write(const char *path EXT2FS_ATTR((unused)),
 	if (!fs_can_allocate(ff, FUSE2FS_B_TO_FSB(ff, len))) {
 		ret = -ENOSPC;
 		goto out;
+	}
+
+	if (fh == &fhurk) {
+		ret = fuse2fs_file_ino(ff, path, NULL, &fhurk.ino);
+		if (ret)
+			goto out;
 	}
 
 	err = ext2fs_file_open(fs, fh->ino, fh->open_flags, &efp);
@@ -5325,7 +5361,8 @@ static int fuse2fs_iomap_begin_read(struct fuse2fs *ff, ext2_ino_t ino,
 
 	/* fall back to slow path for inline data reads */
 	if (inode->i_flags & EXT4_INLINE_DATA_FL)
-		return -ENOSYS;
+		return fuse2fs_iomap_begin_inline(ff, ino, inode, pos, count,
+						  read_iomap);
 
 	/* flush dirty io_channel buffers to disk before iomap reads them */
 	if (!fuse2fs_iomap_does_fileio(ff)) {
