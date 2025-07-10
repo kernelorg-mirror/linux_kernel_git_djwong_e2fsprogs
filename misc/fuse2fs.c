@@ -1748,6 +1748,25 @@ out:
 	return ret;
 }
 
+#if FUSE_VERSION >= FUSE_MAKE_VERSION(3, 99)
+static int op_getattr_iflags(const char *path, struct stat *statbuf,
+			     unsigned int *iflags, struct fuse_file_info *fi)
+{
+	struct fuse_context *ctxt = fuse_get_context();
+	struct fuse2fs *ff = (struct fuse2fs *)ctxt->private_data;
+	int ret = op_getattr(path, statbuf, fi);
+
+	if (ret)
+		return ret;
+
+	if (fuse2fs_iomap_does_fileio(ff))
+		*iflags |= FUSE_IFLAG_IOMAP_DIRECTIO | FUSE_IFLAG_IOMAP_FILEIO;
+
+	return 0;
+}
+#endif
+
+
 static int op_readlink(const char *path, char *buf, size_t len)
 {
 	struct fuse_context *ctxt = fuse_get_context();
@@ -6382,6 +6401,9 @@ static struct fuse_operations fs_ops = {
 # ifdef SUPPORT_FALLOCATE
 	.fallocate = op_fallocate,
 # endif
+#endif
+#if FUSE_VERSION >= FUSE_MAKE_VERSION(3, 99)
+	.getattr_iflags = op_getattr_iflags,
 #endif
 #ifdef HAVE_FUSE_IOMAP
 	.iomap_begin = op_iomap_begin,
