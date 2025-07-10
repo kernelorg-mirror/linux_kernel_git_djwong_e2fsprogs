@@ -1500,7 +1500,7 @@ static void *op_init(struct fuse_conn_info *conn
 	 * Inline data file io depends on op_read/write being fed a path, so we
 	 * have to slow everyone down to look up the path from the nodeid.
 	 */
-	if (fuse2fs_iomap_does_fileio(ff) &&
+	if (fuse2fs_iomap_enabled(ff) &&
 	    ext2fs_has_feature_inline_data(ff->fs->super))
 		cfg->nullpath_ok = 0;
 	else
@@ -1642,6 +1642,24 @@ out:
 	fuse2fs_finish(ff, ret);
 	return ret;
 }
+
+#if FUSE_VERSION >= FUSE_MAKE_VERSION(3, 99)
+static int op_getattr_iflags(const char *path, struct stat *statbuf,
+			     unsigned int *iflags, struct fuse_file_info *fi)
+{
+	struct fuse2fs *ff = fuse2fs_get();
+	int ret = op_getattr(path, statbuf, fi);
+
+	if (ret)
+		return ret;
+
+	if (fuse2fs_iomap_enabled(ff))
+		*iflags |= FUSE_IFLAG_IOMAP;
+
+	return 0;
+}
+#endif
+
 
 static int op_readlink(const char *path, char *buf, size_t len)
 {
@@ -6303,6 +6321,9 @@ static struct fuse_operations fs_ops = {
 # ifdef SUPPORT_FALLOCATE
 	.fallocate = op_fallocate,
 # endif
+#endif
+#if FUSE_VERSION >= FUSE_MAKE_VERSION(3, 99)
+	.getattr_iflags = op_getattr_iflags,
 #endif
 #ifdef HAVE_FUSE_IOMAP
 	.iomap_begin = op_iomap_begin,
