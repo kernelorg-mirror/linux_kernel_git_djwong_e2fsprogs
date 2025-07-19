@@ -1478,6 +1478,37 @@ fi
 fi
 AC_SUBST(FUSE4_CMT)
 
+if test "$FUSE_USE_VERSION" -ge 30
+then
+dnl
+dnl see if fuse3 supports iomap
+dnl
+AC_MSG_CHECKING(for iomap_begin in libfuse)
+AC_LINK_IFELSE(
+[	AC_LANG_PROGRAM([[
+#define _GNU_SOURCE
+#define _FILE_OFFSET_BITS	64
+#define FUSE_USE_VERSION	399
+#include <fuse.h>
+	]], [[
+struct fuse_operations fs_ops = {
+	.iomap_begin = NULL,
+	.iomap_end = NULL,
+};
+struct fuse_file_iomap narf = { };
+	]])
+], have_fuse_iomap=yes
+   AC_MSG_RESULT(yes),
+   AC_MSG_RESULT(no))
+if test "$have_fuse_iomap" = yes; then
+  FUSE_USE_VERSION=399
+  AC_DEFINE(HAVE_FUSE_IOMAP, 1, [Define to 1 if fuse supports iomap])
+fi
+fi
+
+dnl
+dnl set FUSE_USE_VERSION now that we've done all the feature tests
+dnl
 if test -n "$FUSE_USE_VERSION"
 then
 	AC_DEFINE_UNQUOTED(FUSE_USE_VERSION, $FUSE_USE_VERSION,
