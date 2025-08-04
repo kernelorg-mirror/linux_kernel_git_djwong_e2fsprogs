@@ -47,15 +47,6 @@
 #include "ext2fs/ext2fs.h"
 #include "ext2fs/ext2_fs.h"
 #include "ext2fs/ext2fsP.h"
-#if FUSE_VERSION >= FUSE_MAKE_VERSION(3, 0)
-# define FUSE_PLATFORM_OPTS	""
-#else
-# ifdef __linux__
-#  define FUSE_PLATFORM_OPTS	",use_ino,big_writes"
-# else
-#  define FUSE_PLATFORM_OPTS	",use_ino"
-# endif
-#endif
 
 #include "../version.h"
 #include "uuid/uuid.h"
@@ -170,11 +161,9 @@ static inline uint64_t round_down(uint64_t b, unsigned int align)
 		break; \
 	}
 
-#if FUSE_VERSION >= FUSE_MAKE_VERSION(2, 8)
-# ifdef _IOR
-#  ifdef _IOW
-#   define SUPPORT_I_FLAGS
-#  endif
+#ifdef _IOR
+# ifdef _IOW
+#  define SUPPORT_I_FLAGS
 # endif
 #endif
 
@@ -1291,11 +1280,8 @@ static inline int fuse_set_feature_flag(struct fuse_conn_info *conn,
 }
 #endif
 
-static void *op_init(struct fuse_conn_info *conn
-#if FUSE_VERSION >= FUSE_MAKE_VERSION(3, 0)
-			, struct fuse_config *cfg EXT2FS_ATTR((unused))
-#endif
-			)
+static void *op_init(struct fuse_conn_info *conn,
+		     struct fuse_config *cfg EXT2FS_ATTR((unused)))
 {
 	struct fuse4fs *ff = fuse4fs_get();
 	ext2_filsys fs;
@@ -1327,13 +1313,11 @@ static void *op_init(struct fuse_conn_info *conn
 #ifdef FUSE_CAP_NO_EXPORT_SUPPORT
 	fuse_set_feature_flag(conn, FUSE_CAP_NO_EXPORT_SUPPORT);
 #endif
-#if FUSE_VERSION >= FUSE_MAKE_VERSION(3, 0)
 	conn->time_gran = 1;
 	cfg->use_ino = 1;
 	if (ff->debug)
 		cfg->debug = 1;
 	cfg->nullpath_ok = 1;
-#endif
 
 	if (ff->kernel) {
 		char uuid[UUID_STR_SIZE];
@@ -1411,9 +1395,7 @@ static int stat_inode(ext2_filsys fs, ext2_ino_t ino, struct stat *statbuf)
 }
 
 static int __fuse4fs_file_ino(struct fuse4fs *ff, const char *path,
-#if FUSE_VERSION >= FUSE_MAKE_VERSION(3, 0)
 			      struct fuse_file_info *fp EXT2FS_ATTR((unused)),
-#endif
 			      ext2_ino_t *inop,
 			      const char *func,
 			      int line)
@@ -1421,7 +1403,6 @@ static int __fuse4fs_file_ino(struct fuse4fs *ff, const char *path,
 	ext2_filsys fs = ff->fs;
 	errcode_t err;
 
-#if FUSE_VERSION >= FUSE_MAKE_VERSION(3, 0)
 	if (fp) {
 		struct fuse4fs_file_handle *fh = fuse4fs_get_handle(fp);
 
@@ -1432,7 +1413,7 @@ static int __fuse4fs_file_ino(struct fuse4fs *ff, const char *path,
 		dbg_printf(ff, "%s: get ino=%d\n", func, fh->ino);
 		return 0;
 	}
-#endif
+
 	dbg_printf(ff, "%s: get path=%s\n", func, path);
 	err = ext2fs_namei(fs, EXT2_ROOT_INO, EXT2_ROOT_INO, path, inop);
 	if (err)
@@ -1441,19 +1422,11 @@ static int __fuse4fs_file_ino(struct fuse4fs *ff, const char *path,
 	return 0;
 }
 
-#if FUSE_VERSION >= FUSE_MAKE_VERSION(3, 0)
 # define fuse4fs_file_ino(ff, path, fp, inop) \
 	__fuse4fs_file_ino((ff), (path), (fp), (inop), __func__, __LINE__)
-#else
-# define fuse4fs_file_ino(ff, path, fp, inop) \
-	__fuse4fs_file_ino((ff), (path), NULL, (inop), __func__, __LINE__)
-#endif
 
-static int op_getattr(const char *path, struct stat *statbuf
-#if FUSE_VERSION >= FUSE_MAKE_VERSION(3, 0)
-			, struct fuse_file_info *fi
-#endif
-			)
+static int op_getattr(const char *path, struct stat *statbuf,
+		      struct fuse_file_info *fi)
 {
 	struct fuse4fs *ff = fuse4fs_get();
 	ext2_filsys fs;
@@ -2438,11 +2411,8 @@ static int update_dotdot_helper(ext2_ino_t dir EXT2FS_ATTR((unused)),
 	return 0;
 }
 
-static int op_rename(const char *from, const char *to
-#if FUSE_VERSION >= FUSE_MAKE_VERSION(3, 0)
-			, unsigned int flags EXT2FS_ATTR((unused))
-#endif
-			)
+static int op_rename(const char *from, const char *to,
+		     unsigned int flags EXT2FS_ATTR((unused)))
 {
 	struct fuse4fs *ff = fuse4fs_get();
 	ext2_filsys fs;
@@ -2455,11 +2425,9 @@ static int op_rename(const char *from, const char *to
 	int flushed = 0;
 	int ret = 0;
 
-#if FUSE_VERSION >= FUSE_MAKE_VERSION(3, 0)
 	/* renameat2 is not supported */
 	if (flags)
 		return -ENOSYS;
-#endif
 
 	FUSE4FS_CHECK_CONTEXT(ff);
 	dbg_printf(ff, "%s: renaming %s to %s\n", __func__, from, to);
@@ -2773,7 +2741,6 @@ out:
 	return ret;
 }
 
-#if FUSE_VERSION >= FUSE_MAKE_VERSION(3, 0)
 /* Obtain group ids of the process that sent us a command(?) */
 static int get_req_groups(struct fuse4fs *ff, gid_t **gids, size_t *nr_gids)
 {
@@ -2848,19 +2815,8 @@ static int in_file_group(struct fuse_context *ctxt,
 	ext2fs_free_mem(&gids);
 	return ret;
 }
-#else
-static int in_file_group(struct fuse_context *ctxt,
-			 const struct ext2_inode_large *inode)
-{
-	return ctxt->gid == inode_gid(*inode);
-}
-#endif
 
-static int op_chmod(const char *path, mode_t mode
-#if FUSE_VERSION >= FUSE_MAKE_VERSION(3, 0)
-			, struct fuse_file_info *fi
-#endif
-			)
+static int op_chmod(const char *path, mode_t mode, struct fuse_file_info *fi)
 {
 	struct fuse_context *ctxt = fuse_get_context();
 	struct fuse4fs *ff = fuse4fs_get();
@@ -2927,11 +2883,8 @@ out:
 	return ret;
 }
 
-static int op_chown(const char *path, uid_t owner, gid_t group
-#if FUSE_VERSION >= FUSE_MAKE_VERSION(3, 0)
-			, struct fuse_file_info *fi
-#endif
-			)
+static int op_chown(const char *path, uid_t owner, gid_t group,
+		    struct fuse_file_info *fi)
 {
 	struct fuse_context *ctxt = fuse_get_context();
 	struct fuse4fs *ff = fuse4fs_get();
@@ -3069,11 +3022,7 @@ out_close:
 	return 0;
 }
 
-static int op_truncate(const char *path, off_t len
-#if FUSE_VERSION >= FUSE_MAKE_VERSION(3, 0)
-			, struct fuse_file_info *fi
-#endif
-			)
+static int op_truncate(const char *path, off_t len, struct fuse_file_info *fi)
 {
 	struct fuse4fs *ff = fuse4fs_get();
 	ext2_ino_t ino;
@@ -3801,9 +3750,7 @@ struct readdir_iter {
 	fuse_fill_dir_t func;
 
 	struct fuse4fs *ff;
-#if FUSE_VERSION >= FUSE_MAKE_VERSION(3, 0)
 	enum fuse_readdir_flags flags;
-#endif
 	unsigned int nr;
 	off_t startpos;
 	off_t dirpos;
@@ -3855,44 +3802,29 @@ static int op_readdir_iter(ext2_ino_t dir EXT2FS_ATTR((unused)),
 		return 0;
 
 	dbg_printf(i->ff, "READDIR%s ino=%d %u offset=0x%llx\n",
-#if FUSE_VERSION >= FUSE_MAKE_VERSION(3, 0)
 			i->flags == FUSE_READDIR_PLUS ? "PLUS" : "",
-#else
-			"",
-#endif
 			dir,
 			i->nr++,
 			(unsigned long long)i->dirpos);
 
-#if FUSE_VERSION >= FUSE_MAKE_VERSION(3, 0)
 	if (i->flags == FUSE_READDIR_PLUS) {
 		ret = stat_inode(i->fs, dirent->inode, &stat);
 		if (ret)
 			return DIRENT_ABORT;
 	}
-#endif
 
 	memcpy(namebuf, dirent->name, dirent->name_len & 0xFF);
 	namebuf[dirent->name_len & 0xFF] = 0;
-	ret = i->func(i->buf, namebuf, &stat, i->dirpos
-#if FUSE_VERSION >= FUSE_MAKE_VERSION(3, 0)
-			, 0
-#endif
-			);
+	ret = i->func(i->buf, namebuf, &stat, i->dirpos , 0);
 	if (ret)
 		return DIRENT_ABORT;
 
 	return 0;
 }
 
-static int op_readdir(const char *path EXT2FS_ATTR((unused)),
-		      void *buf, fuse_fill_dir_t fill_func,
-		      off_t offset,
-		      struct fuse_file_info *fp
-#if FUSE_VERSION >= FUSE_MAKE_VERSION(3, 0)
-			, enum fuse_readdir_flags flags
-#endif
-			)
+static int op_readdir(const char *path EXT2FS_ATTR((unused)), void *buf,
+		      fuse_fill_dir_t fill_func, off_t offset,
+		      struct fuse_file_info *fp, enum fuse_readdir_flags flags)
 {
 	struct fuse4fs *ff = fuse4fs_get();
 	struct fuse4fs_file_handle *fh = fuse4fs_get_handle(fp);
@@ -3901,9 +3833,7 @@ static int op_readdir(const char *path EXT2FS_ATTR((unused)),
 		.ff = ff,
 		.dirpos = 0,
 		.startpos = offset,
-#if FUSE_VERSION >= FUSE_MAKE_VERSION(3, 0)
 		.flags = flags,
-#endif
 	};
 	int ret = 0;
 
@@ -4086,82 +4016,8 @@ out:
 	return ret;
 }
 
-#if FUSE_VERSION < FUSE_MAKE_VERSION(3, 0)
-static int op_ftruncate(const char *path EXT2FS_ATTR((unused)),
-			off_t len, struct fuse_file_info *fp)
-{
-	struct fuse4fs *ff = fuse4fs_get();
-	struct fuse4fs_file_handle *fh = fuse4fs_get_handle(fp);
-	ext2_filsys fs;
-	ext2_file_t efp;
-	errcode_t err;
-	int ret = 0;
-
-	FUSE4FS_CHECK_CONTEXT(ff);
-	FUSE4FS_CHECK_HANDLE(ff, fh);
-	dbg_printf(ff, "%s: ino=%d len=%jd\n", __func__, fh->ino,
-		   (intmax_t) len);
-	fs = fuse4fs_start(ff);
-	if (!fuse4fs_is_writeable(ff)) {
-		ret = -EROFS;
-		goto out;
-	}
-
-	err = ext2fs_file_open(fs, fh->ino, fh->open_flags, &efp);
-	if (err) {
-		ret = translate_error(fs, fh->ino, err);
-		goto out;
-	}
-
-	err = ext2fs_file_set_size2(efp, len);
-	if (err) {
-		ret = translate_error(fs, fh->ino, err);
-		goto out2;
-	}
-
-out2:
-	err = ext2fs_file_close(efp);
-	if (ret)
-		goto out;
-	if (err) {
-		ret = translate_error(fs, fh->ino, err);
-		goto out;
-	}
-
-	ret = update_mtime(fs, fh->ino, NULL);
-	if (ret)
-		goto out;
-
-out:
-	fuse4fs_finish(ff, ret);
-	return ret;
-}
-
-static int op_fgetattr(const char *path EXT2FS_ATTR((unused)),
-		       struct stat *statbuf,
-		       struct fuse_file_info *fp)
-{
-	struct fuse4fs *ff = fuse4fs_get();
-	ext2_filsys fs;
-	struct fuse4fs_file_handle *fh = fuse4fs_get_handle(fp);
-	int ret = 0;
-
-	FUSE4FS_CHECK_CONTEXT(ff);
-	FUSE4FS_CHECK_HANDLE(ff, fh);
-	dbg_printf(ff, "%s: ino=%d\n", __func__, fh->ino);
-	fs = fuse4fs_start(ff);
-	ret = stat_inode(fs, fh->ino, statbuf);
-	fuse4fs_finish(ff, ret);
-
-	return ret;
-}
-#endif /* FUSE_VERSION < FUSE_MAKE_VERSION(3, 0) */
-
-static int op_utimens(const char *path, const struct timespec ctv[2]
-#if FUSE_VERSION >= FUSE_MAKE_VERSION(3, 0)
-			, struct fuse_file_info *fi
-#endif
-			)
+static int op_utimens(const char *path, const struct timespec ctv[2],
+		      struct fuse_file_info *fi)
 {
 	struct fuse4fs *ff = fuse4fs_get();
 	struct timespec tv[2];
@@ -4559,13 +4415,8 @@ static int ioctl_shutdown(struct fuse4fs *ff, struct fuse4fs_file_handle *fh,
 	return 0;
 }
 
-#if FUSE_VERSION >= FUSE_MAKE_VERSION(2, 8)
 static int op_ioctl(const char *path EXT2FS_ATTR((unused)),
-#if FUSE_VERSION >= FUSE_MAKE_VERSION(3, 0)
 		    unsigned int cmd,
-#else
-		    int cmd,
-#endif
 		    void *arg EXT2FS_ATTR((unused)),
 		    struct fuse_file_info *fp,
 		    unsigned int flags EXT2FS_ATTR((unused)), void *data)
@@ -4616,7 +4467,6 @@ static int op_ioctl(const char *path EXT2FS_ATTR((unused)),
 
 	return ret;
 }
-#endif /* FUSE 28 */
 
 static int op_bmap(const char *path, size_t blocksize EXT2FS_ATTR((unused)),
 		   uint64_t *idx)
@@ -4647,8 +4497,7 @@ out:
 	return ret;
 }
 
-#if FUSE_VERSION >= FUSE_MAKE_VERSION(2, 9)
-# ifdef SUPPORT_FALLOCATE
+#ifdef SUPPORT_FALLOCATE
 static int fuse4fs_allocate_range(struct fuse4fs *ff,
 				  struct fuse4fs_file_handle *fh, int mode,
 				  off_t offset, off_t len)
@@ -4924,8 +4773,7 @@ out:
 
 	return ret;
 }
-# endif /* SUPPORT_FALLOCATE */
-#endif /* FUSE 29 */
+#endif /* SUPPORT_FALLOCATE */
 
 static struct fuse_operations fs_ops = {
 	.init = op_init,
@@ -4958,34 +4806,15 @@ static struct fuse_operations fs_ops = {
 	.fsyncdir = op_fsync,
 	.access = op_access,
 	.create = op_create,
-#if FUSE_VERSION < FUSE_MAKE_VERSION(3, 0)
-	.ftruncate = op_ftruncate,
-	.fgetattr = op_fgetattr,
-#endif
 	.utimens = op_utimens,
-#if (FUSE_VERSION >= FUSE_MAKE_VERSION(2, 9)) && (FUSE_VERSION < FUSE_MAKE_VERSION(3, 0))
-# if defined(UTIME_NOW) || defined(UTIME_OMIT)
-	.flag_utime_omit_ok = 1,
-# endif
-#endif
 	.bmap = op_bmap,
 #ifdef SUPERFLUOUS
 	.lock = op_lock,
 	.poll = op_poll,
 #endif
-#if FUSE_VERSION >= FUSE_MAKE_VERSION(2, 8)
 	.ioctl = op_ioctl,
-#if FUSE_VERSION < FUSE_MAKE_VERSION(3, 0)
-	.flag_nullpath_ok = 1,
-#endif
-#endif
-#if FUSE_VERSION >= FUSE_MAKE_VERSION(2, 9)
-#if FUSE_VERSION < FUSE_MAKE_VERSION(3, 0)
-	.flag_nopath = 1,
-#endif
-# ifdef SUPPORT_FALLOCATE
+#ifdef SUPPORT_FALLOCATE
 	.fallocate = op_fallocate,
-# endif
 #endif
 };
 
@@ -5346,7 +5175,7 @@ int main(int argc, char *argv[])
 
 	/* Set up default fuse parameters */
 	snprintf(extra_args, BUFSIZ, "-okernel_cache,subtype=%s,"
-		 "fsname=%s,attr_timeout=0" FUSE_PLATFORM_OPTS,
+		 "fsname=%s,attr_timeout=0",
 		 get_subtype(argv[0]),
 		 fctx.device);
 	if (fctx.no_default_opts == 0)
