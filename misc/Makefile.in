@@ -35,6 +35,7 @@ MKDIR_P = @MKDIR_P@
 @BLKID_CMT@FINDFS_MAN= findfs.8
 
 @FUSE_CMT@FUSE_PROG= fuse2fs
+@FUSE4_CMT@FUSE_PROG+=fuse4fs
 
 SPROGS=		mke2fs badblocks tune2fs dumpe2fs $(BLKID_PROG) logsave \
 			$(E2IMAGE_PROG) @FSCK_PROG@ e2undo
@@ -73,6 +74,7 @@ E4CRYPT_OBJS=   e4crypt.o
 E2FREEFRAG_OBJS= e2freefrag.o
 E2FUZZ_OBJS=	e2fuzz.o
 FUSE2FS_OBJS=	fuse2fs.o journal.o recovery.o revoke.o
+FUSE4FS_OBJS=	fuse4fs.o journal.o recovery.o revoke.o
 
 PROFILED_TUNE2FS_OBJS=	profiled/tune2fs.o profiled/util.o profiled/journal.o \
 				profiled/recovery.o profiled/revoke.o
@@ -99,6 +101,8 @@ PROFILED_E4DEFRAG_OBJS=	profiled/e4defrag.o
 PROFILED_E4CRYPT_OBJS=	profiled/e4crypt.o
 PROFILED_FUSE2FS_OJBS=	profiled/fuse2fs.o profiled/journal.o \
 			profiled/recovery.o profiled/revoke.o
+PROFILED_FUSE4FS_OJBS=	profiled/fuse4fs.o profiled/journal.o \
+			profiled/recovery.o profiled/revoke.o
 
 SRCS=	$(srcdir)/tune2fs.c $(srcdir)/mklost+found.c $(srcdir)/mke2fs.c $(srcdir)/mk_hugefiles.c \
 		$(srcdir)/chattr.c $(srcdir)/lsattr.c $(srcdir)/dumpe2fs.c \
@@ -108,7 +112,7 @@ SRCS=	$(srcdir)/tune2fs.c $(srcdir)/mklost+found.c $(srcdir)/mke2fs.c $(srcdir)/
 		$(srcdir)/ismounted.c $(srcdir)/e2undo.c \
 		$(srcdir)/e2freefrag.c $(srcdir)/create_inode.c \
 		$(srcdir)/create_inode_libarchive.c \
-		$(srcdir)/fuse2fs.c $(srcdir)/e2fuzz.c \
+		$(srcdir)/fuse2fs.c $(srcdir)/fuse4fs.c $(srcdir)/e2fuzz.c \
 		$(srcdir)/check_fuzzer.c \
 		$(srcdir)/../debugfs/journal.c $(srcdir)/../e2fsck/revoke.c \
 		$(srcdir)/../e2fsck/recovery.c
@@ -426,6 +430,13 @@ fuse2fs: $(FUSE2FS_OBJS) $(DEPLIBS) $(DEPLIBBLKID) $(DEPLIBUUID) \
 		$(LIBEXT2FS) $(DEPLIBS_E2P)
 	$(E) "	LD $@"
 	$(Q) $(CC) $(ALL_LDFLAGS) -o fuse2fs $(FUSE2FS_OBJS) $(LIBS) \
+		$(LIBFUSE) $(LIBBLKID) $(LIBUUID) $(LIBEXT2FS) $(LIBINTL) \
+		$(CLOCK_GETTIME_LIB) $(SYSLIBS) $(LIBS_E2P)
+
+fuse4fs: $(FUSE4FS_OBJS) $(DEPLIBS) $(DEPLIBBLKID) $(DEPLIBUUID) \
+		$(LIBEXT2FS) $(DEPLIBS_E2P)
+	$(E) "	LD $@"
+	$(Q) $(CC) $(ALL_LDFLAGS) -o fuse4fs $(FUSE4FS_OBJS) $(LIBS) \
 		$(LIBFUSE) $(LIBBLKID) $(LIBUUID) $(LIBEXT2FS) $(LIBINTL) \
 		$(CLOCK_GETTIME_LIB) $(SYSLIBS) $(LIBS_E2P)
 
@@ -873,6 +884,15 @@ create_inode_libarchive.o: $(srcdir)/create_inode_libarchive.c \
  $(top_srcdir)/lib/ext2fs/bitops.h $(srcdir)/create_inode_libarchive.h \
  $(top_srcdir)/lib/support/nls-enable.h
 fuse2fs.o: $(srcdir)/fuse2fs.c $(top_builddir)/lib/config.h \
+ $(top_builddir)/lib/dirpaths.h $(top_srcdir)/lib/ext2fs/ext2fs.h \
+ $(top_builddir)/lib/ext2fs/ext2_types.h $(top_srcdir)/lib/ext2fs/ext2_fs.h \
+ $(top_srcdir)/lib/ext2fs/ext3_extents.h $(top_srcdir)/lib/et/com_err.h \
+ $(top_srcdir)/lib/ext2fs/ext2_io.h $(top_builddir)/lib/ext2fs/ext2_err.h \
+ $(top_srcdir)/lib/ext2fs/ext2_ext_attr.h $(top_srcdir)/lib/ext2fs/hashmap.h \
+ $(top_srcdir)/lib/ext2fs/bitops.h $(top_srcdir)/lib/ext2fs/ext2fsP.h \
+ $(top_srcdir)/lib/ext2fs/ext2fs.h $(top_srcdir)/version.h \
+ $(top_srcdir)/lib/e2p/e2p.h
+fuse4fs.o: $(srcdir)/fuse4fs.c $(top_builddir)/lib/config.h \
  $(top_builddir)/lib/dirpaths.h $(top_srcdir)/lib/ext2fs/ext2fs.h \
  $(top_builddir)/lib/ext2fs/ext2_types.h $(top_srcdir)/lib/ext2fs/ext2_fs.h \
  $(top_srcdir)/lib/ext2fs/ext3_extents.h $(top_srcdir)/lib/et/com_err.h \
