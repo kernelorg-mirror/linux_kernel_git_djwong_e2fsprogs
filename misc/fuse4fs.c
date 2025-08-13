@@ -27,6 +27,7 @@
 #include <unistd.h>
 #include <ctype.h>
 #include <stdbool.h>
+#include <assert.h>
 #define FUSE_DARWIN_ENABLE_EXTENSIONS 0
 #ifdef __SET_FOB_FOR_FUSE
 # error Do not set magic value __SET_FOB_FOR_FUSE!!!!
@@ -49,6 +50,8 @@
 #include "ext2fs/ext2fs.h"
 #include "ext2fs/ext2_fs.h"
 #include "ext2fs/ext2fsP.h"
+#include "support/list.h"
+#include "support/cache.h"
 
 #include "../version.h"
 #include "uuid/uuid.h"
@@ -205,6 +208,7 @@ int journal_enable_debug = -1;
 #define FUSE4FS_FILE_MAGIC	(0xEF53DEAFUL)
 struct fuse4fs_file_handle {
 	unsigned long magic;
+	struct fuse4fs_inode *fi;
 	ext2_ino_t ino;
 	int open_flags;
 };
@@ -252,6 +256,7 @@ struct fuse4fs {
 	uint8_t timing;
 #endif
 	struct fuse_session *fuse;
+	struct cache inodes;
 };
 
 #define FUSE4FS_CHECK_HANDLE(req, fh) \
@@ -344,6 +349,115 @@ static inline int u_log2(unsigned int arg)
 		arg >>= 1;
 	}
 	return l;
+}
+
+struct fuse4fs_inode {
+	struct cache_node	i_cnode;
+	ext2_ino_t		i_ino;
+	unsigned int		i_open_count;
+};
+
+struct fuse4fs_ikey {
+	ext2_ino_t		i_ino;
+};
+
+#define ICKEY(key)	((struct fuse4fs_ikey *)(key))
+#define ICNODE(node)	(container_of((node), struct fuse4fs_inode, i_cnode))
+
+static unsigned int
+icache_hash(cache_key_t key, unsigned int hashsize, unsigned int hashshift)
+{
+	uint64_t	hashval = ICKEY(key)->i_ino;
+	uint64_t	tmp;
+
+	tmp = hashval ^ (GOLDEN_RATIO_PRIME + hashval) / CACHE_LINE_SIZE;
+	tmp = tmp ^ ((tmp ^ GOLDEN_RATIO_PRIME) >> hashshift);
+	return tmp % hashsize;
+}
+
+static int icache_compare(struct cache_node *node, cache_key_t key)
+{
+	struct fuse4fs_inode *fi = ICNODE(node);
+	struct fuse4fs_ikey *ikey = ICKEY(key);
+
+	if (fi->i_ino == ikey->i_ino)
+		return CACHE_HIT;
+
+	return CACHE_MISS;
+}
+
+static struct cache_node *icache_alloc(struct cache *c, cache_key_t key)
+{
+	struct fuse4fs_ikey *ikey = ICKEY(key);
+	struct fuse4fs_inode *fi;
+
+	fi = calloc(1, sizeof(struct fuse4fs_inode));
+	if (!fi)
+		return NULL;
+
+	fi->i_ino = ikey->i_ino;
+	return &fi->i_cnode;
+}
+
+static bool icache_flush(struct cache *c, struct cache_node *node)
+{
+	return false;
+}
+
+static void icache_relse(struct cache *c, struct cache_node *node)
+{
+	struct fuse4fs_inode *fi = ICNODE(node);
+
+	assert(fi->i_open_count == 0);
+	free(fi);
+}
+
+static unsigned int icache_bulkrelse(struct cache *cache,
+				     struct list_head *list)
+{
+	struct cache_node *cn, *n;
+	int count = 0;
+
+	if (list_empty(list))
+		return 0;
+
+	list_for_each_entry_safe(cn, n, list, cn_mru) {
+		icache_relse(cache, cn);
+		count++;
+	}
+
+	return count;
+}
+
+static const struct cache_operations icache_ops = {
+	.hash		= icache_hash,
+	.alloc		= icache_alloc,
+	.flush		= icache_flush,
+	.relse		= icache_relse,
+	.compare	= icache_compare,
+	.bulkrelse	= icache_bulkrelse,
+	.resize		= cache_gradual_resize,
+};
+
+static errcode_t fuse4fs_iget(struct fuse4fs *ff, ext2_ino_t ino,
+			      struct fuse4fs_inode **fip)
+{
+	struct fuse4fs_ikey ikey = {
+		.i_ino = ino,
+	};
+	struct cache_node *node = NULL;
+
+	cache_node_get(&ff->inodes, &ikey, 0, &node);
+	if (!node)
+		return ENOMEM;
+
+	*fip = ICNODE(node);
+	return 0;
+}
+
+static void fuse4fs_iput(struct fuse4fs *ff, struct fuse4fs_inode *fi)
+{
+	cache_node_put(&ff->inodes, &fi->i_cnode);
 }
 
 static inline blk64_t FUSE4FS_B_TO_FSBT(const struct fuse4fs *ff, off_t pos)
@@ -949,6 +1063,11 @@ static void fuse4fs_unmount(struct fuse4fs *ff)
 	if (!ff->fs)
 		return;
 
+	if (cache_initialized(&ff->inodes)) {
+		cache_purge(&ff->inodes);
+		cache_destroy(&ff->inodes);
+	}
+
 	err = ext2fs_close(ff->fs);
 	if (err)
 		err_printf(ff, "%s\n", error_message(err));
@@ -994,6 +1113,10 @@ static errcode_t fuse4fs_open(struct fuse4fs *ff, int libext2_flags)
 		err_printf(ff, "%s\n", _("Please run e2fsck -fy."));
 		return err;
 	}
+
+	err = cache_init(CACHE_CAN_SHRINK, 1U << 10, &icache_ops, &ff->inodes);
+	if (err)
+		return translate_error(ff->fs, 0, err);
 
 	ff->fs->priv_data = ff;
 	ff->blocklog = u_log2(ff->fs->blocksize);
@@ -2049,6 +2172,7 @@ static int fuse4fs_remove_inode(struct fuse4fs *ff, ext2_ino_t ino)
 	if (inode.i_links_count)
 		goto write_out;
 
+
 	if (ext2fs_has_feature_ea_inode(fs->super)) {
 		ret = fuse4fs_remove_ea_inodes(ff, ino, &inode);
 		if (ret)
@@ -2957,6 +3081,13 @@ static int fuse4fs_open_file(struct fuse4fs *ff, const struct fuse_ctx *ctxt,
 			goto out;
 	}
 
+	err = fuse4fs_iget(ff, file->ino, &file->fi);
+	if (err) {
+		ret = translate_error(fs, 0, err);
+		goto out;
+	}
+	file->fi->i_open_count++;
+
 	fuse4fs_set_handle(fp, file);
 
 out:
@@ -3144,6 +3275,7 @@ static void op_release(fuse_req_t req, fuse_ino_t fino EXT2FS_ATTR((unused)),
 			ret = translate_error(fs, fh->ino, err);
 	}
 
+	fuse4fs_iput(ff, fh->fi);
 	fp->fh = 0;
 	fuse4fs_finish(ff, ret);
 
