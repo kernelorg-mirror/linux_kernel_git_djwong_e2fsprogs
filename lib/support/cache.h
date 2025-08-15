@@ -56,16 +56,16 @@ struct cache_node;
 
 typedef void *cache_key_t;
 
-typedef void (*cache_walk_t)(struct cache_node *);
-typedef struct cache_node * (*cache_node_alloc_t)(cache_key_t);
-typedef int (*cache_node_flush_t)(struct cache_node *);
-typedef void (*cache_node_relse_t)(struct cache_node *);
+typedef void (*cache_walk_t)(struct cache *c, struct cache_node *cn);
+typedef struct cache_node * (*cache_node_alloc_t)(struct cache *c, cache_key_t k);
+typedef int (*cache_node_flush_t)(struct cache *c, struct cache_node *cn);
+typedef void (*cache_node_relse_t)(struct cache *c, struct cache_node *cn);
 typedef unsigned int (*cache_node_hash_t)(cache_key_t, unsigned int,
 					  unsigned int);
 typedef int (*cache_node_compare_t)(struct cache_node *, cache_key_t);
 typedef unsigned int (*cache_bulk_relse_t)(struct cache *, struct list_head *);
-typedef int (*cache_node_get_t)(struct cache_node *);
-typedef void (*cache_node_put_t)(struct cache_node *);
+typedef int (*cache_node_get_t)(struct cache *c, struct cache_node *cn);
+typedef void (*cache_node_put_t)(struct cache *c, struct cache_node *cn);
 
 struct cache_operations {
 	cache_node_hash_t	hash;
