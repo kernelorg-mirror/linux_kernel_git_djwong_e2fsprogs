@@ -58,7 +58,7 @@ typedef void *cache_key_t;
 
 typedef void (*cache_walk_t)(struct cache *c, struct cache_node *cn, void *d);
 typedef struct cache_node * (*cache_node_alloc_t)(struct cache *c, cache_key_t k);
-typedef int (*cache_node_flush_t)(struct cache *c, struct cache_node *cn);
+typedef bool (*cache_node_flush_t)(struct cache *c, struct cache_node *cn);
 typedef void (*cache_node_relse_t)(struct cache *c, struct cache_node *cn);
 typedef unsigned int (*cache_node_hash_t)(cache_key_t, unsigned int,
 					  unsigned int);
@@ -132,7 +132,7 @@ int cache_init(int flags, unsigned int size,
 void cache_destroy(struct cache *cache);
 void cache_walk(struct cache *cache, cache_walk_t fn, void *data);
 void cache_purge(struct cache *);
-void cache_flush(struct cache *);
+bool cache_flush(struct cache *cache);
 
 int cache_node_get(struct cache *, cache_key_t, struct cache_node **);
 void cache_node_put(struct cache *, struct cache_node *);
