@@ -141,5 +141,6 @@ int cache_node_get_priority(struct cache_node *);
 int cache_node_purge(struct cache *, cache_key_t, struct cache_node *);
 void cache_report(FILE *fp, const char *, struct cache *);
 int cache_overflowed(struct cache *);
+struct cache_node *cache_node_grab(struct cache *cache, struct cache_node *node);
 
 #endif	/* __CACHE_H__ */
