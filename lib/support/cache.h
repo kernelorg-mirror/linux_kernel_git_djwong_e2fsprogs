@@ -122,8 +122,14 @@ struct cache {
 	unsigned int 		c_max;		/* max nodes ever used */
 };
 
-struct cache *cache_init(int, unsigned int, const struct cache_operations *);
-void cache_destroy(struct cache *);
+static inline bool cache_initialized(const struct cache *cache)
+{
+	return cache->hash != NULL;
+}
+
+int cache_init(int flags, unsigned int size,
+	       const struct cache_operations *ops, struct cache *cache);
+void cache_destroy(struct cache *cache);
 void cache_walk(struct cache *, cache_walk_t);
 void cache_purge(struct cache *);
 void cache_flush(struct cache *);
