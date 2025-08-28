@@ -52,6 +52,9 @@
 #include "ext2fs/ext2fs.h"
 #include "ext2fs/ext2_fs.h"
 #include "ext2fs/ext2fsP.h"
+#include "support/list.h"
+#include "support/cache.h"
+#include "support/iocache.h"
 
 #include "../version.h"
 #include "uuid/uuid.h"
@@ -1377,8 +1380,9 @@ static errcode_t fuse2fs_open(struct fuse2fs *ff)
 	if (err)
 		return err;
 
+	iocache_set_backing_manager(unix_io_manager);
 	err = ext2fs_open2(fuse2fs_device(ff), options, flags, 0, 0,
-			   unix_io_manager, &ff->fs);
+			   iocache_io_manager, &ff->fs);
 	if (err == EPERM || err == EACCES) {
 		/*
 		 * Source device cannot be opened for write.  Under these
@@ -1396,7 +1400,7 @@ static errcode_t fuse2fs_open(struct fuse2fs *ff)
 			return err;
 
 		err = ext2fs_open2(fuse2fs_device(ff), options, flags, 0, 0,
-				   unix_io_manager, &ff->fs);
+				   iocache_io_manager, &ff->fs);
 	}
 	if (err) {
 		err_printf(ff, "%s.\n", error_message(err));
