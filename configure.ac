@@ -1375,7 +1375,7 @@ dnl Check to see if the FUSE library is -lfuse3 or -losxfuse
 dnl
 FUSE_LIB=
 dnl osxfuse.dylib supersedes fuselib.dylib
-PKG_CHECK_MODULES([fuse3], [fuse3], [FUSE_LIB=-lfuse3],
+PKG_CHECK_MODULES([fuse3], [fuse3], [FUSE_LIB=-lfuse3 ; have_fuse3_pkg=yes],
 [
 	AC_CHECK_LIB(osxfuse, fuse_main, [FUSE_LIB=-losxfuse])
 ])
@@ -1425,6 +1425,96 @@ if test -n "$have_fuse_lowlevel"
 then
 	AC_DEFINE(HAVE_FUSE_LOWLEVEL, 1,
 		  [Define to 1 if fuse supports lowlevel API])
+fi
+
+dnl
+dnl Check if the FUSE library tells us where to put fs service sockets
+dnl
+have_fuse_service=
+fuse_service_socket_dir=
+if test -n "$have_fuse_lowlevel"
+then
+	AC_ARG_WITH([fuse_service_socket_dir],
+	  [AS_HELP_STRING([--with-fuse-service-socket-dir@<:@=DIR@:>@],
+		  [Create fuse3 filesystem service sockets in DIR.])],
+	  [],
+	  [with_fuse_service_socket_dir=yes])
+	AS_IF([test "x${with_fuse_service_socket_dir}" != "xno"],
+	  [
+		AS_IF([test "x${with_fuse_service_socket_dir}" = "xyes"],
+		  [
+			AS_IF([test "x$have_fuse3_pkg" = "xyes" ],
+			  [
+				with_fuse_service_socket_dir="$($PKG_CONFIG --variable=service_socket_dir fuse3)"
+			  ], [
+				with_fuse_service_socket_dir=""
+			  ])
+		  ])
+		AC_MSG_CHECKING([for fuse3 service socket dir])
+		fuse_service_socket_dir="${with_fuse_service_socket_dir}"
+		AS_IF([test -n "${fuse_service_socket_dir}"],
+		  [
+			AC_MSG_RESULT(${fuse_service_socket_dir})
+		  ],
+		  [
+			AC_MSG_RESULT(no)
+		  ])
+	  ],
+	  [])
+	AC_ARG_WITH([fuse_service_socket_perms],
+	  [AS_HELP_STRING([--with-fuse-service-socket-perms@<:@=MODE@:>@],
+		  [Create fuse3 filesystem service socket with these permissions.])],
+	  [],
+	  [with_fuse_service_socket_perms=yes])
+	AS_IF([test "x${with_fuse_service_socket_perms}" != "xno"],
+	  [
+		AS_IF([test "x${with_fuse_service_socket_perms}" = "xyes"],
+		  [
+			AS_IF([test "x$have_fuse3_pkg" = "xyes" ],
+			  [
+				with_fuse_service_socket_perms="$($PKG_CONFIG --variable=service_socket_perms fuse3)"
+			  ], [
+				with_fuse_service_socket_perms=""
+			  ])
+		  ])
+		fuse_service_socket_perms="${with_fuse_service_socket_perms}"
+	  ],
+	  [])
+fi
+if test -n "$FUSE_USE_VERSION"
+then
+	AC_MSG_CHECKING(for fuse_service_accept in libfuse)
+	AC_LINK_IFELSE(
+	[	AC_LANG_PROGRAM([[
+	#define _GNU_SOURCE
+	#define _FILE_OFFSET_BITS	64
+	#define FUSE_USE_VERSION	319
+	#include <fuse_lowlevel.h>
+	#include <fuse_service.h>
+		]], [[
+	struct fuse_service *moo;
+	fuse_service_accepted(moo);
+		]])
+	], have_fuse_service_accept=yes
+	   AC_MSG_RESULT(yes),
+	   AC_MSG_RESULT(no))
+
+	AC_MSG_CHECKING([for fuse3 service support])
+	AS_IF([test -n "${fuse_service_socket_dir}" && test "${have_fuse_service_accept}" = "yes"],
+	  [
+		AC_MSG_RESULT(yes)
+		have_fuse_service="yes"
+	  ],
+	  [
+		AC_MSG_RESULT(no)
+	  ])
+fi
+AC_SUBST(have_fuse_service)
+AC_SUBST(fuse_service_socket_dir)
+AC_SUBST(fuse_service_socket_perms)
+if test "$have_fuse_service" = yes
+then
+	AC_DEFINE(HAVE_FUSE_SERVICE, 1, [Define to 1 if fuse supports service])
 fi
 
 dnl
@@ -2098,6 +2188,22 @@ AS_IF([test "x${with_systemd_unit_dir}" != "xno"],
   ])
 AC_SUBST(have_systemd)
 AC_SUBST(systemd_system_unit_dir)
+
+AC_MSG_CHECKING([for fuse4fs service support and systemd])
+AS_IF([test "${FUSE4FS_CMT}${have_fuse_service}${have_systemd}" = "yesyes"],
+      [
+           AC_MSG_RESULT(yes)
+           AC_DEFINE(HAVE_FUSE4FS_SERVICE, 1,
+                     [Define to 1 if fuse4fs should be built with fuse service support])
+           have_fuse4fs_service=yes
+      ],
+      [
+           AC_MSG_RESULT(no)
+           have_fuse4fs_service=no
+      ]
+)
+AC_SUBST(have_fuse4fs_service)
+
 dnl Adjust the compiled files if we are on windows vs everywhere else
 dnl
 OS_IO_FILE=""
