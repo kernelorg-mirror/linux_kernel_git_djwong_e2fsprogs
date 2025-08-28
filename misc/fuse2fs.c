@@ -165,6 +165,12 @@ static inline uint64_t round_down(uint64_t b, unsigned int align)
 		fflush(stderr); \
 	} while (0)
 
+#define timing_printf(fuse2fs, format, ...) \
+	while ((fuse2fs)->timing) { \
+		printf("FUSE2FS (%s): " format, (fuse2fs)->shortdev, ##__VA_ARGS__); \
+		break; \
+	}
+
 #if FUSE_VERSION >= FUSE_MAKE_VERSION(2, 8)
 # ifdef _IOR
 #  ifdef _IOW
@@ -240,6 +246,13 @@ struct fuse2fs {
 	unsigned int next_generation;
 	unsigned long long cache_size;
 	char *lockfile;
+#ifdef HAVE_CLOCK_MONOTONIC
+	struct timespec lock_start_time;
+	struct timespec op_start_time;
+
+	/* options set by fuse_opt_parse must be of type int */
+	int timing;
+#endif
 };
 
 #define FUSE2FS_CHECK_HANDLE(ff, fh) \
@@ -456,15 +469,64 @@ fuse2fs_set_handle(struct fuse_file_info *fp, struct fuse2fs_file_handle *fh)
 	fp->fh = (uintptr_t)fh;
 }
 
+#ifdef HAVE_CLOCK_MONOTONIC
+static inline ext2_filsys fuse2fs_start(struct fuse2fs *ff)
+{
+	struct timespec lock_time;
+	int ret;
+
+	if (ff->timing)
+		clock_gettime(CLOCK_MONOTONIC, &lock_time);
+
+	pthread_mutex_lock(&ff->bfl);
+	if (ff->timing) {
+		ret = clock_gettime(CLOCK_MONOTONIC, &ff->op_start_time);
+		if (ret)
+			ff->timing = 0;
+		ff->lock_start_time = lock_time;
+	}
+	return ff->fs;
+}
+
+static inline double ms_from_timespec(const struct timespec *ts)
+{
+	return ((double)ts->tv_sec * 1000) + ((double)ts->tv_nsec / 1000000);
+}
+
+static inline void fuse2fs_finish_timing(struct fuse2fs *ff, const char *func)
+{
+	struct timespec now;
+	double lockf, startf, nowf;
+	int ret;
+
+	if (!ff->timing)
+		return;
+
+	ret = clock_gettime(CLOCK_MONOTONIC, &now);
+	if (ret) {
+		ff->timing = 0;
+		return;
+	}
+
+	lockf = ms_from_timespec(&ff->lock_start_time);
+	startf = ms_from_timespec(&ff->op_start_time);
+	nowf = ms_from_timespec(&now);
+	timing_printf(ff, "%s: lock=%.2fms elapsed=%.2fms\n", func,
+		      startf - lockf, nowf - startf);
+}
+#else
 static inline ext2_filsys fuse2fs_start(struct fuse2fs *ff)
 {
 	pthread_mutex_lock(&ff->bfl);
 	return ff->fs;
 }
+# define fuse2fs_finish_timing(...)	((void)0)
+#endif
 
 static inline void __fuse2fs_finish(struct fuse2fs *ff, int ret,
 				    const char *func)
 {
+	fuse2fs_finish_timing(ff, func);
 	if (ret)
 		dbg_printf(ff, "%s: libfuse ret=%d\n", func, ret);
 	pthread_mutex_unlock(&ff->bfl);
@@ -4687,6 +4749,9 @@ static struct fuse_opt fuse2fs_opts[] = {
 	FUSE2FS_OPT("acl",		acl,			1),
 	FUSE2FS_OPT("noacl",		acl,			0),
 	FUSE2FS_OPT("lockfile=%s",	lockfile,		0),
+#ifdef HAVE_CLOCK_MONOTONIC
+	FUSE2FS_OPT("timing",		timing,			1),
+#endif
 
 	FUSE_OPT_KEY("user_xattr",	FUSE2FS_IGNORED),
 	FUSE_OPT_KEY("noblock_validity", FUSE2FS_IGNORED),
