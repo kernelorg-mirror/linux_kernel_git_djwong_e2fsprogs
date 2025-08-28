@@ -122,8 +122,6 @@
 #endif
 #endif /* !defined(ENODATA) */
 
-static ext2_filsys global_fs; /* Try not to use this directly */
-
 static inline uint64_t round_up(uint64_t b, unsigned int align)
 {
 	unsigned int m;
@@ -1241,7 +1239,7 @@ static void *op_init(struct fuse_conn_info *conn
 		log_printf(ff, "%s %s.\n", _("mounted filesystem"), uuid);
 	}
 
-	if (global_fs->flags & EXT2_FLAG_RW)
+	if (ff->fs->flags & EXT2_FLAG_RW)
 		fuse2fs_read_bitmaps(ff);
 
 	/*
@@ -5229,7 +5227,7 @@ int main(int argc, char *argv[])
 	if (fctx.directio)
 		flags |= EXT2_FLAG_DIRECT_IO;
 	err = ext2fs_open2(fctx.device, options, flags, 0, 0, unix_io_manager,
-			   &global_fs);
+			   &fctx.fs);
 	if (err == EPERM || err == EACCES) {
 		/*
 		 * Source device cannot be opened for write.  Under these
@@ -5241,15 +5239,14 @@ int main(int argc, char *argv[])
 		flags &= ~EXT2_FLAG_RW;
 		fctx.ro = 1;
 		err = ext2fs_open2(fctx.device, options, flags, 0, 0,
-				   unix_io_manager, &global_fs);
+				   unix_io_manager, &fctx.fs);
 	}
 	if (err) {
 		err_printf(&fctx, "%s.\n", error_message(err));
 		err_printf(&fctx, "%s\n", _("Please run e2fsck -fy."));
 		goto out;
 	}
-	fctx.fs = global_fs;
-	global_fs->priv_data = &fctx;
+	fctx.fs->priv_data = &fctx;
 	fctx.blocklog = u_log2(fctx.fs->blocksize);
 	fctx.blockmask = fctx.fs->blocksize - 1;
 
@@ -5262,7 +5259,7 @@ int main(int argc, char *argv[])
 
 		snprintf(buf, sizeof(buf), "cache_blocks=%llu",
 			 FUSE2FS_B_TO_FSBT(&fctx, fctx.cache_size));
-		err = io_channel_set_options(global_fs->io, buf);
+		err = io_channel_set_options(fctx.fs->io, buf);
 		if (err) {
 			err_printf(&fctx, "%s %lluk: %s\n",
 				   _("cannot set disk cache size to"),
@@ -5281,23 +5278,23 @@ int main(int argc, char *argv[])
 	 * ext4 can't do COW of shared blocks, so if the feature is enabled,
 	 * we must force ro mode.
 	 */
-	if (ext2fs_has_feature_shared_blocks(global_fs->super))
+	if (ext2fs_has_feature_shared_blocks(fctx.fs->super))
 		fctx.ro = 1;
 
-	if (ext2fs_has_feature_journal_needs_recovery(global_fs->super)) {
+	if (ext2fs_has_feature_journal_needs_recovery(fctx.fs->super)) {
 		if (fctx.norecovery) {
 			log_printf(&fctx, "%s\n",
  _("Mounting read-only without recovering journal."));
 			fctx.ro = 1;
-			global_fs->flags &= ~EXT2_FLAG_RW;
-		} else if (!(global_fs->flags & EXT2_FLAG_RW)) {
+			fctx.fs->flags &= ~EXT2_FLAG_RW;
+		} else if (!(fctx.fs->flags & EXT2_FLAG_RW)) {
 			err_printf(&fctx, "%s\n",
  _("Cannot replay journal on read-only device."));
 			ret = 32;
 			goto out;
 		} else {
 			log_printf(&fctx, "%s\n", _("Recovering journal."));
-			err = ext2fs_run_ext3_journal(&global_fs);
+			err = ext2fs_run_ext3_journal(&fctx.fs);
 			if (err) {
 				err_printf(&fctx, "%s.\n", error_message(err));
 				err_printf(&fctx, "%s\n",
@@ -5309,58 +5306,58 @@ int main(int argc, char *argv[])
 			if (err)
 				goto out;
 		}
-	} else if (ext2fs_has_feature_journal(global_fs->super)) {
-		err = ext2fs_check_ext3_journal(global_fs);
+	} else if (ext2fs_has_feature_journal(fctx.fs->super)) {
+		err = ext2fs_check_ext3_journal(fctx.fs);
 		if (err) {
-			translate_error(global_fs, 0, err);
+			translate_error(fctx.fs, 0, err);
 			goto out;
 		}
 	}
 
-	ret = fuse2fs_check_root_dir(global_fs);
+	ret = fuse2fs_check_root_dir(fctx.fs);
 	if (ret)
 		goto out;
 
-	if (global_fs->flags & EXT2_FLAG_RW) {
-		if (ext2fs_has_feature_journal(global_fs->super))
+	if (fctx.fs->flags & EXT2_FLAG_RW) {
+		if (ext2fs_has_feature_journal(fctx.fs->super))
 			log_printf(&fctx, "%s",
  _("Warning: fuse2fs does not support using the journal.\n"
    "There may be file system corruption or data loss if\n"
    "the file system is not gracefully unmounted.\n"));
 	}
 
-	if (!(global_fs->super->s_state & EXT2_VALID_FS))
+	if (!(fctx.fs->super->s_state & EXT2_VALID_FS))
 		err_printf(&fctx, "%s\n",
  _("Warning: Mounting unchecked fs, running e2fsck is recommended."));
-	if (global_fs->super->s_max_mnt_count > 0 &&
-	    global_fs->super->s_mnt_count >= global_fs->super->s_max_mnt_count)
+	if (fctx.fs->super->s_max_mnt_count > 0 &&
+	    fctx.fs->super->s_mnt_count >= fctx.fs->super->s_max_mnt_count)
 		err_printf(&fctx, "%s\n",
  _("Warning: Maximal mount count reached, running e2fsck is recommended."));
-	if (global_fs->super->s_checkinterval > 0 &&
-	    (time_t) (global_fs->super->s_lastcheck +
-		      global_fs->super->s_checkinterval) <= time(0))
+	if (fctx.fs->super->s_checkinterval > 0 &&
+	    (time_t) (fctx.fs->super->s_lastcheck +
+		      fctx.fs->super->s_checkinterval) <= time(0))
 		err_printf(&fctx, "%s\n",
  _("Warning: Check time reached; running e2fsck is recommended."));
-	if (global_fs->super->s_last_orphan)
+	if (fctx.fs->super->s_last_orphan)
 		err_printf(&fctx, "%s\n",
  _("Orphans detected; running e2fsck is recommended."));
 
 	/* Clear the valid flag so that an unclean shutdown forces a fsck */
-	if (global_fs->flags & EXT2_FLAG_RW) {
-		global_fs->super->s_mnt_count++;
-		ext2fs_set_tstamp(global_fs->super, s_mtime, time(NULL));
-		global_fs->super->s_state &= ~EXT2_VALID_FS;
-		ext2fs_mark_super_dirty(global_fs);
-		err = ext2fs_flush2(global_fs, 0);
+	if (fctx.fs->flags & EXT2_FLAG_RW) {
+		fctx.fs->super->s_mnt_count++;
+		ext2fs_set_tstamp(fctx.fs->super, s_mtime, time(NULL));
+		fctx.fs->super->s_state &= ~EXT2_VALID_FS;
+		ext2fs_mark_super_dirty(fctx.fs);
+		err = ext2fs_flush2(fctx.fs, 0);
 		if (err) {
-			translate_error(global_fs, 0, err);
+			translate_error(fctx.fs, 0, err);
 			ret |= 32;
 			goto out;
 		}
 	}
 
 	if (!fctx.errors_behavior)
-		fctx.errors_behavior = global_fs->super->s_errors;
+		fctx.errors_behavior = fctx.fs->super->s_errors;
 
 	/* Initialize generation counter */
 	get_random_bytes(&fctx.next_generation, sizeof(unsigned int));
@@ -5451,10 +5448,10 @@ out:
  _("Mount failed while opening filesystem.  Check dmesg(1) for details."));
 		fflush(orig_stderr);
 	}
-	if (global_fs) {
+	if (fctx.fs) {
 		fuse2fs_mmp_stop(&fctx);
 
-		err = ext2fs_close_free(&global_fs);
+		err = ext2fs_close_free(&fctx.fs);
 		if (err)
 			com_err(argv[0], err, "while closing fs");
 	}
