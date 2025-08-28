@@ -62,6 +62,7 @@ cache_init(
 		cache_operations->bulkrelse : cache_generic_bulkrelse;
 	cache->get = cache_operations->get;
 	cache->put = cache_operations->put;
+	cache->resize = cache_operations->resize;
 	pthread_mutex_init(&cache->c_mutex, NULL);
 
 	for (i = 0; i <= CACHE_DIRTY_PRIORITY; i++) {
@@ -90,11 +91,18 @@ static void
 cache_expand(
 	struct cache *		cache)
 {
+	unsigned int		new_size = 0;
+
 	pthread_mutex_lock(&cache->c_mutex);
+	if (cache->resize)
+		new_size = cache->resize(cache, cache->c_maxcount);
+	if (new_size <= cache->c_maxcount)
+		new_size = cache->c_maxcount * 2;
 #ifdef CACHE_DEBUG
-	fprintf(stderr, "doubling cache size to %d\n", 2 * cache->c_maxcount);
+	fprintf(stderr, "increasing cache max size from %u to %u\n",
+			cache->c_maxcount, new_size);
 #endif
-	cache->c_maxcount *= 2;
+	cache->c_maxcount = new_size;
 	pthread_mutex_unlock(&cache->c_mutex);
 }
 
