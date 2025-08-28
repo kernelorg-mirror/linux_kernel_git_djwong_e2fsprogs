@@ -111,7 +111,7 @@ cache_walk(
 		hash = &cache->c_hash[i];
 		pthread_mutex_lock(&hash->ch_mutex);
 		list_for_each_entry(pos, &hash->ch_list, cn_hash)
-			visit(pos);
+			visit(cache, pos);
 		pthread_mutex_unlock(&hash->ch_mutex);
 	}
 }
@@ -125,7 +125,8 @@ cache_walk(
 #ifdef CACHE_DEBUG
 static void
 cache_zero_check(
-	struct cache_node *	node)
+	struct cache		*cache,
+	struct cache_node	*node)
 {
 	if (node->cn_count > 0) {
 		fprintf(stderr, "%s: refcount is %u, not zero (node=%p)\n",
@@ -170,7 +171,7 @@ cache_generic_bulkrelse(
 		node = list_entry(list->next, struct cache_node, cn_mru);
 		pthread_mutex_destroy(&node->cn_mutex);
 		list_del_init(&node->cn_mru);
-		cache->relse(node);
+		cache->relse(cache, node);
 		count++;
 	}
 
@@ -237,7 +238,7 @@ cache_shake(
 			continue;
 
 		/* memory pressure is not allowed to release dirty objects */
-		if (cache->flush(node) && !purge) {
+		if (cache->flush(cache, node) && !purge) {
 			list_del(&node->cn_mru);
 			mru->cm_count--;
 			node->cn_priority = -1;
@@ -302,7 +303,7 @@ cache_node_allocate(
 	pthread_mutex_unlock(&cache->c_mutex);
 	if (!nodesfree)
 		return NULL;
-	node = cache->alloc(key);
+	node = cache->alloc(cache, key);
 	if (node == NULL) {	/* uh-oh */
 		pthread_mutex_lock(&cache->c_mutex);
 		cache->c_count--;
@@ -341,7 +342,7 @@ __cache_node_purge(
 	}
 
 	/* can't purge dirty objects */
-	if (cache->flush(node)) {
+	if (cache->flush(cache, node)) {
 		pthread_mutex_unlock(&node->cn_mutex);
 		return 1;
 	}
@@ -355,7 +356,7 @@ __cache_node_purge(
 	pthread_mutex_unlock(&node->cn_mutex);
 	pthread_mutex_destroy(&node->cn_mutex);
 	list_del_init(&node->cn_hash);
-	cache->relse(node);
+	cache->relse(cache, node);
 	return 0;
 }
 
@@ -410,7 +411,7 @@ cache_node_get(
 			pthread_mutex_lock(&node->cn_mutex);
 
 			if (node->cn_count == 0 && cache->get) {
-				int err = cache->get(node);
+				int err = cache->get(cache, node);
 				if (err) {
 					pthread_mutex_unlock(&node->cn_mutex);
 					goto next_object;
@@ -505,7 +506,7 @@ cache_node_put(
 	node->cn_count--;
 
 	if (node->cn_count == 0 && cache->put)
-		cache->put(node);
+		cache->put(cache, node);
 	if (node->cn_count == 0) {
 		/* add unreferenced node to appropriate MRU for shaker */
 		mru = &cache->c_mrus[node->cn_priority];
@@ -640,7 +641,7 @@ cache_flush(
 		pthread_mutex_lock(&hash->ch_mutex);
 		list_for_each_entry(node, &hash->ch_list, cn_hash) {
 			pthread_mutex_lock(&node->cn_mutex);
-			cache->flush(node);
+			cache->flush(cache, node);
 			pthread_mutex_unlock(&node->cn_mutex);
 		}
 		pthread_mutex_unlock(&hash->ch_mutex);
