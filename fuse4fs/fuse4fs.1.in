@@ -75,6 +75,12 @@ pretend to be root for permission checks
 \fB-o\fR fuse4fs_debug
 enable fuse4fs debugging
 .TP
+\fB-o\fR iomap=
+If set to \fI1\fR, requires iomap to be enabled.
+If set to \fI0\fR, forbids use of iomap.
+If set to \fIdefault\fR (or not set), enables iomap if present.
+This substantially improves the performance of the fuse4fs server.
+.TP
 \fB-o\fR kernel
 Behave more like the kernel ext4 driver in the following ways:
 Allows processes owned by other users to access the filesystem.
