@@ -726,8 +726,10 @@ static int fs_can_allocate(struct fuse2fs *ff, blk64_t num)
 	return ext2fs_free_blocks_count(fs->super) > reserved + num;
 }
 
-static int fs_writeable(ext2_filsys fs)
+static int fuse2fs_is_writeable(struct fuse2fs *ff)
 {
+	ext2_filsys fs = ff->fs;
+
 	return (fs->flags & EXT2_FLAG_RW) && (fs->super->s_error_count == 0);
 }
 
@@ -756,12 +758,10 @@ static inline int want_check_owner(struct fuse2fs *ff,
 static int check_iflags_access(struct fuse2fs *ff, ext2_ino_t ino,
 			       const struct ext2_inode *inode, int mask)
 {
-	ext2_filsys fs = ff->fs;
-
 	EXT2FS_BUILD_BUG_ON((A_OK & (R_OK | W_OK | X_OK | F_OK)) != 0);
 
 	/* no writing or metadata changes to read-only or broken fs */
-	if ((mask & (W_OK | A_OK)) && !fs_writeable(fs))
+	if ((mask & (W_OK | A_OK)) && !fuse2fs_is_writeable(ff))
 		return -EROFS;
 
 	dbg_printf(ff, "access ino=%d mask=e%s%s%s%s iflags=0x%x\n",
@@ -794,7 +794,7 @@ static int check_inum_access(struct fuse2fs *ff, ext2_ino_t ino, int mask)
 	int ret;
 
 	/* no writing to read-only or broken fs */
-	if ((mask & (W_OK | A_OK)) && !fs_writeable(fs))
+	if ((mask & (W_OK | A_OK)) && !fuse2fs_is_writeable(ff))
 		return -EROFS;
 
 	err = ext2fs_read_inode(fs, ino, &inode);
@@ -1517,7 +1517,7 @@ static int op_readlink(const char *path, char *buf, size_t len)
 	}
 	buf[len] = 0;
 
-	if (fs_writeable(fs)) {
+	if (fuse2fs_is_writeable(ff)) {
 		ret = update_atime(fs, ino);
 		if (ret)
 			goto out;
@@ -3252,7 +3252,7 @@ out2:
 		goto out;
 	}
 
-	if (fh->check_flags != X_OK && fs_writeable(fs)) {
+	if (fh->check_flags != X_OK && fuse2fs_is_writeable(ff)) {
 		ret = update_atime(fs, fh->ino);
 		if (ret)
 			goto out;
@@ -3279,7 +3279,7 @@ static int op_write(const char *path EXT2FS_ATTR((unused)),
 	dbg_printf(ff, "%s: ino=%d off=0x%llx len=0x%zx\n", __func__, fh->ino,
 		   (unsigned long long) offset, len);
 	fs = fuse2fs_start(ff);
-	if (!fs_writeable(fs)) {
+	if (!fuse2fs_is_writeable(ff)) {
 		ret = -EROFS;
 		goto out;
 	}
@@ -3347,7 +3347,7 @@ static int op_release(const char *path EXT2FS_ATTR((unused)),
 	fs = fuse2fs_start(ff);
 
 	if ((fp->flags & O_SYNC) &&
-	    fs_writeable(fs) &&
+	    fuse2fs_is_writeable(ff) &&
 	    (fh->open_flags & EXT2_FILE_WRITE)) {
 		err = ext2fs_flush2(fs, EXT2_FLAG_FLUSH_NO_SYNC);
 		if (err)
@@ -3377,7 +3377,7 @@ static int op_fsync(const char *path EXT2FS_ATTR((unused)),
 	dbg_printf(ff, "%s: ino=%d\n", __func__, fh->ino);
 	fs = fuse2fs_start(ff);
 	/* For now, flush everything, even if it's slow */
-	if (fs_writeable(fs) && fh->open_flags & EXT2_FILE_WRITE) {
+	if (fuse2fs_is_writeable(ff) && fh->open_flags & EXT2_FILE_WRITE) {
 		err = ext2fs_flush2(fs, 0);
 		if (err)
 			ret = translate_error(fs, fh->ino, err);
@@ -3915,7 +3915,7 @@ static int op_readdir(const char *path EXT2FS_ATTR((unused)),
 		goto out;
 	}
 
-	if (fs_writeable(i.fs)) {
+	if (fuse2fs_is_writeable(ff)) {
 		ret = update_atime(i.fs, fh->ino);
 		if (ret)
 			goto out;
@@ -4097,7 +4097,7 @@ static int op_ftruncate(const char *path EXT2FS_ATTR((unused)),
 	dbg_printf(ff, "%s: ino=%d len=%jd\n", __func__, fh->ino,
 		   (intmax_t) len);
 	fs = fuse2fs_start(ff);
-	if (!fs_writeable(fs)) {
+	if (!fuse2fs_is_writeable(ff)) {
 		ret = -EROFS;
 		goto out;
 	}
@@ -4475,7 +4475,7 @@ static int ioctl_fitrim(struct fuse2fs *ff, struct fuse2fs_file_handle *fh,
 	blk64_t max_blks = ext2fs_blocks_count(fs->super);
 	errcode_t err = 0;
 
-	if (!fs_writeable(fs))
+	if (!fuse2fs_is_writeable(ff))
 		return -EROFS;
 
 	start = FUSE2FS_B_TO_FSBT(ff, fr->start);
@@ -4893,7 +4893,6 @@ static int op_fallocate(const char *path EXT2FS_ATTR((unused)), int mode,
 {
 	struct fuse2fs *ff = fuse2fs_get();
 	struct fuse2fs_file_handle *fh = fuse2fs_get_handle(fp);
-	ext2_filsys fs;
 	int ret;
 
 	/* Catch unknown flags */
@@ -4902,8 +4901,8 @@ static int op_fallocate(const char *path EXT2FS_ATTR((unused)), int mode,
 
 	FUSE2FS_CHECK_CONTEXT(ff);
 	FUSE2FS_CHECK_HANDLE(ff, fh);
-	fs = fuse2fs_start(ff);
-	if (!fs_writeable(fs)) {
+	fuse2fs_start(ff);
+	if (!fuse2fs_is_writeable(ff)) {
 		ret = -EROFS;
 		goto out;
 	}
