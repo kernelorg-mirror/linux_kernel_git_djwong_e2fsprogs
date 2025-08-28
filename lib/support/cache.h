@@ -134,7 +134,10 @@ void cache_walk(struct cache *cache, cache_walk_t fn, void *data);
 void cache_purge(struct cache *);
 bool cache_flush(struct cache *cache);
 
-int cache_node_get(struct cache *, cache_key_t, struct cache_node **);
+/* don't allocate a new node */
+#define CACHE_GET_INCORE	(1U << 0)
+int cache_node_get(struct cache *c, cache_key_t key, unsigned int cgflags,
+		   struct cache_node **nodep);
 void cache_node_put(struct cache *, struct cache_node *);
 void cache_node_set_priority(struct cache *, struct cache_node *, int);
 int cache_node_get_priority(struct cache_node *);
