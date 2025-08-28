@@ -1179,6 +1179,10 @@ static int fuse2fs_mount(struct fuse2fs *ff)
 			fs = ff->fs;
 			ext2fs_clear_feature_journal_needs_recovery(fs->super);
 			ext2fs_mark_super_dirty(fs);
+
+			err = fuse2fs_check_support(ff);
+			if (err)
+				return err;
 		}
 	} else if (ext2fs_has_feature_journal(fs->super)) {
 		err = ext2fs_check_ext3_journal(fs);
