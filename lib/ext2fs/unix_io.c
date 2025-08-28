@@ -1479,7 +1479,9 @@ static errcode_t unix_write_byte(io_channel channel, unsigned long offset,
 #ifdef ALIGN_DEBUG
 		printf("unix_write_byte: O_DIRECT fallback\n");
 #endif
-		return EXT2_ET_UNIMPLEMENTED;
+		if (!IS_ALIGNED(data->offset + offset, channel->align) ||
+		    !IS_ALIGNED(data->offset + offset + size, channel->align))
+			return EXT2_ET_UNIMPLEMENTED;
 	}
 
 #ifndef NO_IO_CACHE
