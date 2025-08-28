@@ -57,6 +57,7 @@
 #include "support/thread.h"
 #include "support/list.h"
 #include "support/cache.h"
+#include "support/iocache.h"
 
 #include "../version.h"
 #include "uuid/uuid.h"
@@ -1576,6 +1577,7 @@ static errcode_t fuse4fs_open(struct fuse4fs *ff)
 		flags |= EXT2_FLAG_DIRECT_IO;
 
 	dbg_printf(ff, "opening with flags=0x%x\n", flags);
+	iocache_set_backing_manager(unix_io_manager);
 
 	err = fuse4fs_try_losetup(ff, flags);
 	if (err)
@@ -1613,7 +1615,7 @@ static errcode_t fuse4fs_open(struct fuse4fs *ff)
 	deadline = init_deadline(FUSE4FS_OPEN_TIMEOUT);
 	do {
 		err = ext2fs_open2(fuse4fs_device(ff), options, flags, 0, 0,
-				   unix_io_manager, &ff->fs);
+				   iocache_io_manager, &ff->fs);
 		if ((err == EPERM || err == EACCES) &&
 		    (!ff->ro || (flags & EXT2_FLAG_RW))) {
 			/*
