@@ -196,6 +196,13 @@ static errcode_t write_primary_superblock(ext2_filsys fs,
 	int		check_idx, write_idx, size;
 	errcode_t	retval;
 
+	if (fs->flags & EXT2_FLAG_WRITE_FULL_SUPER) {
+		retval = io_channel_write_byte(fs->io, SUPERBLOCK_OFFSET,
+					       SUPERBLOCK_SIZE, super);
+		if (!retval)
+			return 0;
+	}
+
 	if (!fs->io->manager->write_byte || !fs->orig_super) {
 	fallback:
 		io_channel_set_blksize(fs->io, SUPERBLOCK_OFFSET);
