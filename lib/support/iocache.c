@@ -249,7 +249,7 @@ static void iocache_invalidate_bufs(struct iocache_private_data *data,
  */
 static void iocache_invalidate_cache(struct iocache_private_data *data)
 {
-	LIST_HEAD(list);
+	struct list_head list = LIST_HEAD_INIT(list);
 
 	cache_walk(&data->cache, iocache_add_list, &list);
 	iocache_invalidate_bufs(data, &list);
@@ -262,7 +262,7 @@ static void iocache_invalidate_cache(struct iocache_private_data *data)
 static void iocache_invalidate_range(struct iocache_private_data *data,
 				     blk64_t block, uint64_t count)
 {
-	LIST_HEAD(list);
+	struct list_head list = LIST_HEAD_INIT(list);
 	uint64_t i;
 
 	for (i = 0; i < count; i++) {
