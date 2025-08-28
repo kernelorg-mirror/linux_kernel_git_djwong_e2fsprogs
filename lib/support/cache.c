@@ -362,6 +362,35 @@ __cache_node_purge(
 	return 0;
 }
 
+/* Grab a new refcount to the cache node object.  Caller must hold cn_mutex. */
+struct cache_node *cache_node_grab(struct cache *cache, struct cache_node *node)
+{
+	struct cache_mru *mru;
+
+	if (node->cn_count == 0 && cache->get) {
+		int err = cache->get(cache, node);
+		if (err)
+			return NULL;
+	}
+	if (node->cn_count == 0) {
+		ASSERT(node->cn_priority >= 0);
+		ASSERT(!list_empty(&node->cn_mru));
+		mru = &cache->c_mrus[node->cn_priority];
+		pthread_mutex_lock(&mru->cm_mutex);
+		mru->cm_count--;
+		list_del_init(&node->cn_mru);
+		pthread_mutex_unlock(&mru->cm_mutex);
+		if (node->cn_old_priority != -1) {
+			ASSERT(node->cn_priority ==
+					CACHE_DIRTY_PRIORITY);
+			node->cn_priority = node->cn_old_priority;
+			node->cn_old_priority = -1;
+		}
+	}
+	node->cn_count++;
+	return node;
+}
+
 /*
  * Lookup in the cache hash table.  With any luck we'll get a cache
  * hit, in which case this will all be over quickly and painlessly.
@@ -377,7 +406,6 @@ cache_node_get(
 	struct cache_node	**nodep)
 {
 	struct cache_hash	*hash;
-	struct cache_mru	*mru;
 	struct cache_node	*node = NULL, *n;
 	unsigned int		hashidx;
 	int			priority = 0;
@@ -411,31 +439,10 @@ cache_node_get(
 			 * from its MRU list, and update stats.
 			 */
 			pthread_mutex_lock(&node->cn_mutex);
-
-			if (node->cn_count == 0 && cache->get) {
-				int err = cache->get(cache, node);
-				if (err) {
-					pthread_mutex_unlock(&node->cn_mutex);
-					goto next_object;
-				}
+			if (!cache_node_grab(cache, node)) {
+				pthread_mutex_unlock(&node->cn_mutex);
+				goto next_object;
 			}
-			if (node->cn_count == 0) {
-				ASSERT(node->cn_priority >= 0);
-				ASSERT(!list_empty(&node->cn_mru));
-				mru = &cache->c_mrus[node->cn_priority];
-				pthread_mutex_lock(&mru->cm_mutex);
-				mru->cm_count--;
-				list_del_init(&node->cn_mru);
-				pthread_mutex_unlock(&mru->cm_mutex);
-				if (node->cn_old_priority != -1) {
-					ASSERT(node->cn_priority ==
-							CACHE_DIRTY_PRIORITY);
-					node->cn_priority = node->cn_old_priority;
-					node->cn_old_priority = -1;
-				}
-			}
-			node->cn_count++;
-
 			pthread_mutex_unlock(&node->cn_mutex);
 			pthread_mutex_unlock(&hash->ch_mutex);
 
