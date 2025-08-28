@@ -1469,6 +1469,9 @@ static void *op_init(struct fuse_conn_info *conn
 #ifdef FUSE_CAP_CACHE_SYMLINKS
 	fuse_set_feature_flag(conn, FUSE_CAP_CACHE_SYMLINKS);
 #endif
+#ifdef FUSE_CAP_NO_EXPORT_SUPPORT
+	fuse_set_feature_flag(conn, FUSE_CAP_NO_EXPORT_SUPPORT);
+#endif
 #if FUSE_VERSION >= FUSE_MAKE_VERSION(3, 0)
 	conn->time_gran = 1;
 	cfg->use_ino = 1;
