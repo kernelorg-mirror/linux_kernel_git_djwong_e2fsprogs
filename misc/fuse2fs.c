@@ -1061,7 +1061,8 @@ static void fuse2fs_unmount(struct fuse2fs *ff)
 static errcode_t fuse2fs_open(struct fuse2fs *ff, int libext2_flags)
 {
 	char options[128];
-	int flags = EXT2_FLAG_64BITS | EXT2_FLAG_THREADS | libext2_flags;
+	int flags = EXT2_FLAG_64BITS | EXT2_FLAG_THREADS | EXT2_FLAG_RW |
+		    libext2_flags;
 	errcode_t err;
 
 	if (ff->lockfile) {
@@ -1072,8 +1073,6 @@ static errcode_t fuse2fs_open(struct fuse2fs *ff, int libext2_flags)
 
 	snprintf(options, sizeof(options) - 1, "offset=%lu", ff->offset);
 
-	if (!ff->norecovery)
-		flags |= EXT2_FLAG_RW;
 	if (ff->directio)
 		flags |= EXT2_FLAG_DIRECT_IO;
 
@@ -1139,6 +1138,22 @@ static errcode_t fuse2fs_check_support(struct fuse2fs *ff)
 		return EXT2_ET_FILESYSTEM_CORRUPTED;
 	}
 
+	return 0;
+}
+
+static int fuse2fs_check_norecovery(struct fuse2fs *ff)
+{
+	if (ext2fs_has_feature_journal_needs_recovery(ff->fs->super) &&
+	    !ff->ro) {
+		log_printf(ff, "%s\n",
+ _("Required journal recovery suppressed and not mounted read-only."));
+		return 32;
+	}
+
+	/*
+	 * Amazingly, norecovery allows a rw mount when there's a clean journal
+	 * present.
+	 */
 	return 0;
 }
 
@@ -5393,6 +5408,12 @@ int main(int argc, char *argv[])
 	 */
 	if (ext2fs_has_feature_shared_blocks(fctx.fs->super))
 		fctx.ro = 1;
+
+	if (fctx.norecovery) {
+		ret = fuse2fs_check_norecovery(&fctx);
+		if (ret)
+			goto out;
+	}
 
 	err = fuse2fs_mount(&fctx);
 	if (err) {
