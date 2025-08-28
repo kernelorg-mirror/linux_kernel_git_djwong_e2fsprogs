@@ -154,6 +154,9 @@
 /* Define to 1 if fuse supports lowlevel API */
 #undef HAVE_FUSE_LOWLEVEL
 
+/* Define to 1 if fuse supports service */
+#undef HAVE_FUSE_SERVICE
+
 /* Define to 1 if you have the 'futimes' function. */
 #undef HAVE_FUTIMES
 

@@ -46,6 +46,10 @@
 # define _FILE_OFFSET_BITS 64
 #endif /* _FILE_OFFSET_BITS */
 #include <fuse_lowlevel.h>
+#ifdef HAVE_FUSE_SERVICE
+# include <sys/mount.h>
+# include <fuse_service.h>
+#endif
 #ifdef __SET_FOB_FOR_FUSE
 # undef _FILE_OFFSET_BITS
 #endif /* __SET_FOB_FOR_FUSE */
@@ -315,7 +319,26 @@ struct fuse4fs {
 #endif
 	struct fuse_session *fuse;
 	struct cache inodes;
+#ifdef HAVE_FUSE_SERVICE
+	struct fuse_service *service;
+	int bdev_fd;
+#endif
 };
+
+#ifdef HAVE_FUSE_SERVICE
+static inline bool fuse4fs_is_service(const struct fuse4fs *ff)
+{
+	return fuse_service_accepted(ff->service);
+}
+
+static int fuse4fs_service_discover_iomap(struct fuse4fs *ff)
+{
+	return fuse_service_discover_iomap(ff->service);
+}
+#else
+# define fuse4fs_is_service(...)		(false)
+# define fuse4fs_service_discover_iomap(...)	(0)
+#endif
 
 #define FUSE4FS_CHECK_HANDLE(req, fh) \
 	do { \
@@ -916,7 +939,10 @@ static inline void fuse4fs_discover_iomap(struct fuse4fs *ff)
 	if (ff->iomap_want == FT_DISABLE)
 		return;
 
-	ff->iomap_cap = fuse_lowlevel_discover_iomap(-1);
+	if (fuse4fs_is_service(ff))
+		ff->iomap_cap = fuse4fs_service_discover_iomap(ff);
+	else
+		ff->iomap_cap = fuse_lowlevel_discover_iomap(-1);
 }
 
 static inline bool fuse4fs_can_iomap(const struct fuse4fs *ff)
@@ -1411,6 +1437,145 @@ static errcode_t fuse4fs_check_support(struct fuse4fs *ff)
 	return 0;
 }
 
+#ifdef HAVE_FUSE_SERVICE
+static int fuse4fs_service_connect(struct fuse4fs *ff, struct fuse_args *args)
+{
+	int ret;
+
+	ret = fuse_service_accept(&ff->service);
+	if (ret)
+		return ret;
+
+	if (fuse4fs_is_service(ff))
+		return fuse_service_append_args(ff->service, args);
+
+	return 0;
+}
+
+static bool fuse4fs_service_should_drop_kernel_mode(const struct fuse4fs *ff)
+{
+	return ff->kernel && fuse4fs_is_service(ff) &&
+	       !fuse_service_can_allow_other(ff->service);
+}
+
+static inline int
+fuse4fs_service_parse_cmdline(struct fuse_args *args,
+			      struct fuse_cmdline_opts *opts)
+{
+	return fuse_service_parse_cmdline_opts(args, opts);
+}
+
+static void fuse4fs_service_release(struct fuse4fs *ff, int exitcode)
+{
+	if (fuse4fs_is_service(ff)) {
+		fuse_service_send_goodbye(ff->service, exitcode);
+		fuse_service_release(ff->service);
+	}
+}
+
+static void fuse4fs_service_close_bdev(struct fuse4fs *ff)
+{
+	if (ff->bdev_fd >= 0)
+		close(ff->bdev_fd);
+	ff->bdev_fd = -1;
+}
+
+static int fuse4fs_service_finish(struct fuse4fs *ff, int exitcode)
+{
+	if (!fuse4fs_is_service(ff))
+		return exitcode;
+
+	fuse_service_send_goodbye(ff->service, exitcode);
+	fuse_service_destroy(&ff->service);
+	close(ff->bdev_fd);
+	ff->bdev_fd = -1;
+
+	return fuse_service_exit(exitcode);
+}
+
+static int fuse4fs_service_get_config(struct fuse4fs *ff)
+{
+	double deadline = init_deadline(FUSE4FS_OPEN_TIMEOUT);
+	int open_flags = O_RDWR;
+	int fd;
+	int ret;
+
+	do {
+		ret = fuse_service_request_file(ff->service, ff->device,
+						open_flags | O_EXCL, 0, 0);
+		if (ret)
+			return ret;
+
+		ret = fuse_service_receive_file(ff->service, ff->device, &fd);
+		if (ret)
+			return ret;
+
+		if ((fd == -EPERM || fd == -EACCES) && open_flags == O_RDWR) {
+			/* Try readonly, but force the loop to run once more */
+			open_flags = O_RDONLY;
+			ret = 1;
+		}
+	} while (ret == 1 || (fd == -EBUSY && retry_before_deadline(deadline)));
+
+	if (fd < 0) {
+		err_printf(ff, "%s %s: %s.\n", _("opening device"), ff->device,
+			   strerror(-fd));
+		return -1;
+	}
+	ff->bdev_fd = fd;
+
+	return fuse_service_finish_file_requests(ff->service);
+}
+
+static errcode_t fuse4fs_service_openfs(struct fuse4fs *ff, char *options,
+					int flags)
+{
+	char path[32];
+
+	snprintf(path, sizeof(path), "%d", ff->bdev_fd);
+	iocache_set_backing_manager(unixfd_io_manager);
+	return ext2fs_open2(path, options, flags, 0, 0, iocache_io_manager,
+			&ff->fs);
+}
+
+static int fuse4fs_service_configure_iomap(struct fuse4fs *ff)
+{
+	int error = 0;
+	int ret;
+
+	ret = fuse_service_configure_iomap(ff->service,
+					   ff->iomap_want == FT_ENABLE,
+					   &error);
+	if (ret)
+		return -1;
+
+	if (error) {
+		err_printf(ff, "%s: %s.\n", _("enabling iomap"),
+			   strerror(error));
+		return -1;
+	}
+
+	return 0;
+}
+
+static int fuse4fs_service_session_mount(struct fuse4fs *ff,
+					 struct fuse_cmdline_opts *opts)
+{
+	return fuse_service_session_mount(ff->service, ff->fuse, S_IFDIR, opts);
+}
+#else
+# define fuse4fs_service_connect(...)		(0)
+# define fuse4fs_service_should_drop_kernel_mode(...)	(false)
+# define fuse4fs_service_parse_cmdline(...)	(EOPNOTSUPP)
+# define fuse4fs_service_release(...)		((void)0)
+# define fuse4fs_service_close_bdev(...)	((void)0)
+# define fuse4fs_service_finish(fctx, ret)	(ret)
+# define fuse4fs_service_get_config(...)	(EOPNOTSUPP)
+# define fuse4fs_service_openfs(...)		(EOPNOTSUPP)
+# define fuse4fs_service_configure_iomap(...)	(EOPNOTSUPP)
+# define fuse4fs_service_session_mount(...)	(EOPNOTSUPP)
+#endif
+
 static errcode_t fuse4fs_acquire_lockfile(struct fuse4fs *ff)
 {
 	char *resolved;
@@ -1468,6 +1633,10 @@ static int fuse4fs_try_losetup(struct fuse4fs *ff, int flags)
 
 	/* Only transform a regular file into a loopdev for iomap */
 	if (!fuse4fs_can_iomap(ff))
+		return 0;
+
+	/* Service helper does the losetup */
+	if (fuse4fs_is_service(ff))
 		return 0;
 
 	/* open the actual target device, see if it's a regular file */
@@ -1548,6 +1717,7 @@ static void fuse4fs_unmount(struct fuse4fs *ff)
 				   uuid);
 	}
 
+	fuse4fs_service_close_bdev(ff);
 	fuse4fs_undo_losetup(ff);
 
 	if (ff->lockfile)
@@ -1614,8 +1784,11 @@ static errcode_t fuse4fs_open(struct fuse4fs *ff)
 	 */
 	deadline = init_deadline(FUSE4FS_OPEN_TIMEOUT);
 	do {
-		err = ext2fs_open2(fuse4fs_device(ff), options, flags, 0, 0,
-				   iocache_io_manager, &ff->fs);
+		if (fuse4fs_is_service(ff))
+			err = fuse4fs_service_openfs(ff, options, flags);
+		else
+			err = ext2fs_open2(fuse4fs_device(ff), options, flags,
+					   0, 0, iocache_io_manager, &ff->fs);
 		if ((err == EPERM || err == EACCES) &&
 		    (!ff->ro || (flags & EXT2_FLAG_RW))) {
 			/*
@@ -1977,6 +2150,10 @@ static int fuse4fs_setup_logging(struct fuse4fs *ff)
 	char *logfile = getenv("FUSE4FS_LOGFILE");
 	if (logfile)
 		return fuse4fs_capture_output(ff, logfile);
+
+	/* systemd already hooked us up to /dev/ttyprintk */
+	if (fuse4fs_is_service(ff))
+		return 0;
 
 	/* in kernel mode, try to log errors to the kernel log */
 	if (ff->kernel)
@@ -7908,14 +8085,13 @@ out_default:
 }
 
 static void fuse4fs_compute_libfuse_args(struct fuse4fs *ff,
-					 struct fuse_args *args,
-					 const char *argv0)
+					 struct fuse_args *args)
 {
 	char extra_args[BUFSIZ];
 
 	/* Set up default fuse parameters */
 	snprintf(extra_args, BUFSIZ, "-osubtype=%s,fsname=%s",
-		 get_subtype(argv0),
+		 get_subtype(args->argv[0]),
 		 ff->device);
 	if (ff->no_default_opts == 0)
 		fuse_opt_add_arg(args, extra_args);
@@ -7931,6 +8107,15 @@ static void fuse4fs_compute_libfuse_args(struct fuse4fs *ff,
 		fuse_opt_add_arg(args,"-onosuid");
 #endif
 	}
+
+	/*
+	 * If we're mounting as a systemd service but the mount helper told us
+	 * that allow_other isn't allowed, then disable -okernel.  This mount
+	 * option gets special consideration because it's hardcoded in the
+	 * service unit file.
+	 */
+	if (fuse4fs_service_should_drop_kernel_mode(ff))
+		ff->kernel = 0;
 
 	if (ff->kernel) {
 		/*
@@ -8034,7 +8219,11 @@ static int fuse4fs_main(struct fuse_args *args, struct fuse4fs *ff)
 	struct fuse_loop_config *loop_config = NULL;
 	int ret;
 
-	if (fuse_parse_cmdline(args, &opts) != 0) {
+	if (fuse4fs_is_service(ff))
+		ret = fuse4fs_service_parse_cmdline(args, &opts);
+	else
+		ret = fuse_parse_cmdline(args, &opts);
+	if (ret != 0) {
 		ret = 1;
 		goto out;
 	}
@@ -8067,7 +8256,11 @@ static int fuse4fs_main(struct fuse_args *args, struct fuse4fs *ff)
 	}
 	ff->fuse = se;
 
-	if (fuse_session_mount(se, opts.mountpoint) != 0) {
+	if (fuse4fs_is_service(ff))
+		ret = fuse4fs_service_session_mount(ff, &opts);
+	else
+		ret = fuse_session_mount(se, opts.mountpoint);
+	if (ret != 0) {
 		ret = 4;
 		goto out_destroy_session;
 	}
@@ -8108,6 +8301,8 @@ static int fuse4fs_main(struct fuse_args *args, struct fuse4fs *ff)
 	fuse_loop_cfg_set_idle_threads(loop_config, opts.max_idle_threads);
 	fuse_loop_cfg_set_max_threads(loop_config, 4);
 
+	fuse4fs_service_release(ff, 0);
+
 	/*
 	 * Try to set ourselves up with fs reclaim disabled to prevent
 	 * recursive reclaim and throttling.  This must be done before starting
@@ -8133,13 +8328,17 @@ out_flusher:
 out_remove_signal_handlers:
 	fuse_remove_signal_handlers(se);
 out_unmount:
-	fuse_session_unmount(se);
+	if (fuse4fs_is_service(ff))
+		fuse_service_session_unmount(ff->service);
+	else
+		fuse_session_unmount(se);
 out_destroy_session:
 	ff->fuse = NULL;
 	fuse_session_destroy(se);
 out_free_opts:
 	free(opts.mountpoint);
 out:
+	fuse4fs_service_release(ff, ret);
 	return ret;
 }
 
@@ -8162,10 +8361,27 @@ int main(int argc, char *argv[])
 		.loop_fd = -1,
 #endif
 		.translate_inums = 1,
+#ifdef HAVE_FUSE_SERVICE
+		.bdev_fd = -1,
+#endif
 	};
 	errcode_t err;
 	FILE *orig_stderr = stderr;
 	int ret;
+
+	/* XXX */
+	if (getenv("FUSE4FS_DEBUGGER")) {
+		char *moo = getenv("FUSE4FS_DEBUGGER");
+		int del = atoi(moo);
+
+		fprintf(stderr, "WAITING %ds FOR DEBUGGER\n", del);
+		fflush(stderr);
+		sleep(del);
+	}
+
+	ret = fuse4fs_service_connect(&fctx, &args);
+	if (ret)
+		exit(1);
 
 	ret = fuse_opt_parse(&args, &fctx, fuse4fs_opts, fuse4fs_opt_proc);
 	if (ret)
@@ -8206,6 +8422,24 @@ int main(int argc, char *argv[])
 		/* operational error */
 		ret = 2;
 		goto out;
+	}
+
+	if (fuse4fs_is_service(&fctx)) {
+		ret = fuse4fs_service_get_config(&fctx);
+		if (ret) {
+			ret = 2;
+			goto out;
+		}
+
+#ifdef HAVE_FUSE_IOMAP
+		if (fctx.iomap_want != FT_DISABLE) {
+			ret = fuse4fs_service_configure_iomap(&fctx);
+			if (ret) {
+				ret = 2;
+				goto out;
+			}
+		}
+#endif
 	}
 
 	try_adjust_oom_score(&fctx);
@@ -8262,7 +8496,7 @@ int main(int argc, char *argv[])
 	/* Initialize generation counter */
 	get_random_bytes(&fctx.next_generation, sizeof(unsigned int));
 
-	fuse4fs_compute_libfuse_args(&fctx, &args, argv[0]);
+	fuse4fs_compute_libfuse_args(&fctx, &args);
 
 	ret = fuse4fs_main(&args, &fctx);
 	switch(ret) {
@@ -8306,6 +8540,7 @@ out:
 	if (fctx.device)
 		free(fctx.device);
 	pthread_mutex_destroy(&fctx.bfl);
+	ret = fuse4fs_service_finish(&fctx, ret);
 	fuse_opt_free_args(&args);
 	return ret;
 }
