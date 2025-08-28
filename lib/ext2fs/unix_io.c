@@ -65,6 +65,12 @@
 #include <pthread.h>
 #endif
 
+#if defined(HAVE_SYS_FILE_H) && defined(HAVE_SYS_TIME_H)
+# include <sys/file.h>
+# include <sys/time.h>
+# define WANT_LOCK_UNIX_FD
+#endif
+
 #if defined(__linux__) && defined(_IO) && !defined(BLKROGET)
 #define BLKROGET   _IO(0x12, 94) /* Get read-only status (0 = read_write).  */
 #endif
@@ -148,6 +154,9 @@ struct unix_private_data {
 	pthread_mutex_t cache_mutex;
 	pthread_mutex_t bounce_mutex;
 	pthread_mutex_t stats_mutex;
+#endif
+#ifdef WANT_LOCK_UNIX_FD
+	int	lock_flags;
 #endif
 };
 
@@ -897,6 +906,63 @@ int ext2fs_fstat(int fd, ext2fs_struct_stat *buf)
 #endif
 }
 
+#ifdef WANT_LOCK_UNIX_FD
+
+static double gettime_monotonic(void)
+{
+#ifdef CLOCK_MONOTONIC
+	struct timespec ts;
+#endif
+	struct timeval tv;
+	static double fake_ret = 0;
+	int ret;
+
+#ifdef CLOCK_MONOTONIC
+	ret = clock_gettime(CLOCK_MONOTONIC, &ts);
+	if (ret == 0)
+		return ts.tv_sec + (ts.tv_nsec / 1000000000.0);
+#endif
+	ret = gettimeofday(&tv, NULL);
+	if (ret == 0)
+		return tv.tv_sec + (tv.tv_usec / 1000000.0);
+
+	fake_ret += 1.0;
+	return fake_ret;
+}
+
+static int unix_lock_fd(int fd, int flags)
+{
+	const int operation = (flags & IO_FLAG_EXCLUSIVE) ? LOCK_EX | LOCK_NB :
+							    LOCK_SH | LOCK_NB;
+	double deadline, now;
+	int ret;
+
+	now = gettime_monotonic();
+	deadline = now + 5; /* wait 5 seconds for lock */
+
+	/* Use a tight sleeping loop here to avoid signal handlers */
+	while (now <= deadline) {
+		ret = flock(fd, operation);
+		if (ret == 0)
+			return 0;
+		if (errno != EWOULDBLOCK)
+			return -1;
+
+		/* sleep 0.1s before trying again */
+		usleep(100000);
+
+		now = gettime_monotonic();
+	}
+
+	errno = EWOULDBLOCK;
+	return -1;
+}
+
+static void unix_unlock_fd(int fd)
+{
+	flock(fd, LOCK_UN);
+}
+#endif
 
 static errcode_t unix_open_channel(const char *name, int fd,
 				   int flags, io_channel *channel,
@@ -989,6 +1055,25 @@ static errcode_t unix_open_channel(const char *name, int fd,
 			io->flags |= CHANNEL_FLAGS_DISCARD_ZEROES;
 		}
 	}
+
+#ifdef WANT_LOCK_UNIX_FD
+	/*
+	 * If this is a regular file, take an (advisory) exclusive lock to
+	 * prevent other instances of e2fsprogs from writing to the filesystem
+	 * image.  On Linux we don't want to do this for block devices because
+	 * udev will spin forever trying to settle a uevent and cause weird
+	 * userspace stalls, and block devices have O_EXCL so we don't need
+	 * this there.
+	 */
+	if ((flags & IO_FLAG_RW) && !(io->flags & CHANNEL_FLAGS_BLOCK_DEVICE)) {
+		int lock_flags = unix_lock_fd(fd, flags);
+		if (lock_flags < 0) {
+			retval = errno;
+			goto cleanup;
+		}
+		data->lock_flags = lock_flags;
+	}
+#endif
 
 #if defined(__CYGWIN__)
 	/*
@@ -1083,6 +1168,10 @@ static errcode_t unix_open_channel(const char *name, int fd,
 
 cleanup:
 	if (data) {
+#ifdef WANT_LOCK_UNIX_FD
+		if (data->lock_flags)
+			unix_unlock_fd(data->dev);
+#endif
 		if (io->manager != unixfd_io_manager && data->dev >= 0)
 			close(data->dev);
 		if (data->cache) {
@@ -1200,6 +1289,10 @@ static errcode_t unix_close(io_channel channel)
 	if (retval2 && !retval)
 		retval = retval2;
 
+#ifdef WANT_LOCK_UNIX_FD
+	if (data->lock_flags)
+		unix_unlock_fd(data->dev);
+#endif
 	if (channel->manager != unixfd_io_manager && close(data->dev) < 0 &&
 	    !retval)
 		retval = errno;
