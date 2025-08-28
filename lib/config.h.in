@@ -82,6 +82,9 @@
 /* Define to 1 if fuse supports loopdev operations */
 #undef HAVE_FUSE_LOOPDEV
 
+/* Define to 1 if fuse supports service */
+#undef HAVE_FUSE_SERVICE
+
 /* Define to 1 if you have the Mac OS X function
    CFLocaleCopyPreferredLanguages in the CoreFoundation framework. */
 #undef HAVE_CFLOCALECOPYPREFERREDLANGUAGES
