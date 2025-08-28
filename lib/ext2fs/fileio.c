@@ -314,6 +314,11 @@ errcode_t ext2fs_file_read(ext2_file_t file, void *buf,
 	if (file->inode.i_flags & EXT4_INLINE_DATA_FL)
 		return ext2fs_file_read_inline_data(file, buf, wanted, got);
 
+	if (file->flags & EXT2_FILE_NOBLOCKIO) {
+		retval = EXT2_ET_OP_NOT_SUPPORTED;
+		goto fail;
+	}
+
 	while ((file->pos < EXT2_I_SIZE(&file->inode)) && (wanted > 0)) {
 		retval = sync_buffer_position(file);
 		if (retval)
@@ -439,6 +444,11 @@ errcode_t ext2fs_file_write(ext2_file_t file, const void *buf,
 			return retval;
 		/* fall through to read data from the block */
 		retval = 0;
+	}
+
+	if (file->flags & EXT2_FILE_NOBLOCKIO) {
+		retval = EXT2_ET_OP_NOT_SUPPORTED;
+		goto fail;
 	}
 
 	while (nbytes > 0) {
@@ -609,7 +619,7 @@ static errcode_t ext2fs_file_zero_past_offset(ext2_file_t file,
 	int ret_flags;
 	errcode_t retval;
 
-	if (off == 0)
+	if (off == 0 || (file->flags & EXT2_FILE_NOBLOCKIO))
 		return 0;
 
 	retval = sync_buffer_position(file);
