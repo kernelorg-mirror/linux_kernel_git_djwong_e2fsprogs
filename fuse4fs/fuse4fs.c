@@ -44,6 +44,10 @@
 # define _FILE_OFFSET_BITS 64
 #endif /* _FILE_OFFSET_BITS */
 #include <fuse_lowlevel.h>
+#ifdef HAVE_FUSE_SERVICE
+# include <sys/mount.h>
+# include <fuse_service.h>
+#endif
 #ifdef __SET_FOB_FOR_FUSE
 # undef _FILE_OFFSET_BITS
 #endif /* __SET_FOB_FOR_FUSE */
@@ -301,6 +305,11 @@ struct fuse4fs {
 #endif
 	struct fuse_session *fuse;
 	struct cache inodes;
+#ifdef HAVE_FUSE_SERVICE
+	struct fuse_service *service;
+	int bdev_fd;
+	int fusedev_fd;
+#endif
 };
 
 #define FUSE4FS_CHECK_HANDLE(req, fh) \
@@ -1196,6 +1205,149 @@ static int fuse4fs_inum_access(struct fuse4fs *ff, const struct fuse_ctx *ctxt,
 	return -EACCES;
 }
 
+#ifdef HAVE_FUSE_SERVICE
+static inline bool fuse4fs_is_service(const struct fuse4fs *ff)
+{
+	return fuse_service_accepted(ff->service);
+}
+
+static int fuse4fs_service_connect(struct fuse4fs *ff, struct fuse_args *args)
+{
+	int ret;
+
+	ret = fuse_service_accept(&ff->service);
+	if (ret)
+		return ret;
+
+	if (fuse4fs_is_service(ff))
+		fuse_service_append_args(ff->service, args);
+
+	return 0;
+}
+
+static inline int
+fuse4fs_service_parse_cmdline(struct fuse_args *args,
+			      struct fuse_cmdline_opts *opts)
+{
+	return fuse_service_parse_cmdline_opts(args, opts);
+}
+
+static void fuse4fs_service_release(struct fuse4fs *ff, int mount_ret)
+{
+	if (fuse4fs_is_service(ff)) {
+		fuse_service_send_goodbye(ff->service, mount_ret);
+		fuse_service_release(ff->service);
+	}
+}
+
+static int fuse4fs_service_finish(struct fuse4fs *ff, int ret)
+{
+	if (!fuse4fs_is_service(ff))
+		return ret;
+
+	fuse_service_destroy(&ff->service);
+
+	/*
+	 * If we're being run as a service, the return code must fit the LSB
+	 * init script action error guidelines, which is to say that we
+	 * compress all errors to 1 ("generic or unspecified error", LSB 5.0
+	 * section 22.2) and hope the admin will scan the log for what actually
+	 * happened.
+	 *
+	 * We have to sleep 2 seconds here because journald uses the pid to
+	 * connect our log messages to the systemd service.  This is critical
+	 * for capturing all the log messages if the scrub fails, because the
+	 * fail service uses the service name to gather log messages for the
+	 * error report.
+	 */
+	sleep(2);
+	if (ret != EXIT_SUCCESS)
+		return EXIT_FAILURE;
+	return EXIT_SUCCESS;
+}
+
+static int fuse4fs_service_get_config(struct fuse4fs *ff)
+{
+	int open_flags = O_RDWR | O_EXCL;
+	int ret;
+
+	if (!fuse4fs_is_service(ff))
+		return 0;
+
+retry:
+	ret = fuse_service_request_file(ff->service, ff->device, open_flags,
+					0);
+	if (ret)
+		return ret;
+
+	ret = fuse_service_receive_file(ff->service, ff->device, &ff->bdev_fd);
+	if (ret == -2) {
+		if (errno == EACCES && (open_flags & O_ACCMODE) != O_RDONLY) {
+			open_flags = O_RDONLY | O_EXCL;
+			goto retry;
+		}
+		err_printf(ff, "opening %s: %s.\n", ff->device, strerror(errno));
+		return ret;
+	}
+	if (ret)
+		return ret;
+
+	if (ff->bdev_fd < 0) {
+		err_printf(ff, "%s: %s: %s.\n", ff->device,
+			   _("opening service"), strerror(-ff->bdev_fd));
+		return -1;
+	}
+
+	ret = fuse_service_finish_file_requests(ff->service);
+	if (ret)
+		return ret;
+
+	ff->fusedev_fd = fuse_service_take_fusedev(ff->service);
+	return 0;
+}
+
+static errcode_t fuse4fs_service_openfs(struct fuse4fs *ff, char *options,
+					int flags)
+{
+	char path[32];
+
+	snprintf(path, sizeof(path), "%d", ff->bdev_fd);
+	iocache_set_backing_manager(unixfd_io_manager);
+	return ext2fs_open2(path, options, flags, 0, 0, iocache_io_manager,
+			&ff->fs);
+}
+
+static int fuse4fs_service(struct fuse4fs *ff, struct fuse_session *se,
+			   const char *mountpoint)
+{
+	char path[32];
+	int ret = 0;
+
+	snprintf(path, sizeof(path), "/dev/fd/%d", ff->fusedev_fd);
+	ret = fuse_session_mount(se, path);
+	if (ret)
+		return ret;
+
+	ret = fuse_service_mount(ff->service, se, mountpoint);
+	if (ret) {
+		err_printf(ff, "%s: %s\n", _("mounting filesystem"),
+			   strerror(errno));
+		return ret;
+	}
+
+	return 0;
+}
+#else
+# define fuse4fs_is_service(...)		(false)
+# define fuse4fs_service_connect(...)		(0)
+# define fuse4fs_service_parse_cmdline(...)	(EOPNOTSUPP)
+# define fuse4fs_service_release(...)		((void)0)
+# define fuse4fs_service_finish(ret)		(ret)
+# define fuse4fs_service_get_config(...)	(0)
+# define fuse4fs_service_openfs(...)		(EOPNOTSUPP)
+# define fuse4fs_service(...)			(EOPNOTSUPP)
+#endif
+
 static errcode_t fuse4fs_acquire_lockfile(struct fuse4fs *ff)
 {
 	char *resolved;
@@ -1290,16 +1442,22 @@ static errcode_t fuse4fs_open(struct fuse4fs *ff, int libext2_flags)
 	dbg_printf(ff, "opening with flags=0x%x\n", flags);
 
 	iocache_set_backing_manager(unix_io_manager);
-	err = ext2fs_open2(ff->device, options, flags, 0, 0, iocache_io_manager,
-			   &ff->fs);
+	if (fuse4fs_is_service(ff))
+		err = fuse4fs_service_openfs(ff, options, flags);
+	else
+		err = ext2fs_open2(ff->device, options, flags, 0, 0,
+				   iocache_io_manager, &ff->fs);
 	if (err == EPERM) {
 		err_printf(ff, "%s.\n",
 			   _("read-only device, trying to mount norecovery"));
 		flags &= ~EXT2_FLAG_RW;
 		ff->ro = 1;
 		ff->norecovery = 1;
-		err = ext2fs_open2(ff->device, options, flags, 0, 0,
-				   iocache_io_manager, &ff->fs);
+		if (fuse4fs_is_service(ff))
+			err = fuse4fs_service_openfs(ff, options, flags);
+		else
+			err = ext2fs_open2(ff->device, options, flags, 0, 0,
+					   iocache_io_manager, &ff->fs);
 	}
 	if (err) {
 		err_printf(ff, "%s.\n", error_message(err));
@@ -1601,6 +1759,10 @@ static int fuse4fs_setup_logging(struct fuse4fs *ff)
 	char *logfile = getenv("FUSE4FS_LOGFILE");
 	if (logfile)
 		return fuse4fs_capture_output(ff, logfile);
+
+	/* systemd already hooked us up to /dev/ttyprintk */
+	if (fuse4fs_is_service(ff))
+		return 0;
 
 	/* in kernel mode, try to log errors to the kernel log */
 	if (ff->kernel)
@@ -7351,7 +7513,11 @@ static inline bool fuse4fs_discover_iomap(struct fuse4fs *ff)
 	if (ff->iomap_want == FT_DISABLE)
 		return false;
 
+#ifdef HAVE_FUSE_SERVICE
+	ff->iomap_cap = fuse_lowlevel_discover_iomap(ff->fusedev_fd);
+#else
 	ff->iomap_cap = fuse_lowlevel_discover_iomap(-1);
+#endif
 	return ff->iomap_cap & FUSE_IOMAP_SUPPORT_FILEIO;
 }
 #else
@@ -7389,7 +7555,11 @@ static int fuse4fs_main(struct fuse_args *args, struct fuse4fs *ff)
 	struct fuse_loop_config *loop_config = NULL;
 	int ret;
 
-	if (fuse_parse_cmdline(args, &opts) != 0) {
+	if (fuse4fs_is_service(ff))
+		ret = fuse4fs_service_parse_cmdline(args, &opts);
+	else
+		ret = fuse_parse_cmdline(args, &opts);
+	if (ret != 0) {
 		ret = 1;
 		goto out;
 	}
@@ -7422,7 +7592,18 @@ static int fuse4fs_main(struct fuse_args *args, struct fuse4fs *ff)
 	}
 	ff->fuse = se;
 
-	if (fuse_session_mount(se, opts.mountpoint) != 0) {
+	if (fuse4fs_is_service(ff)) {
+		/*
+		 * foreground mode is needed so that systemd actually tracks
+		 * the service correctly and doesnt try to kill it; and so that
+		 * stdout/stderr don't get zapped
+		 */
+		opts.foreground = 1;
+		ret = fuse4fs_service(ff, se, opts.mountpoint);
+	} else {
+		ret = fuse_session_mount(se, opts.mountpoint);
+	}
+	if (ret != 0) {
 		ret = 4;
 		goto out_destroy_session;
 	}
@@ -7463,6 +7644,8 @@ static int fuse4fs_main(struct fuse_args *args, struct fuse4fs *ff)
 	fuse_loop_cfg_set_idle_threads(loop_config, opts.max_idle_threads);
 	fuse_loop_cfg_set_max_threads(loop_config, 4);
 
+	fuse4fs_service_release(ff, 0);
+
 	if (fuse_session_loop_mt(se, loop_config) != 0) {
 		ret = 8;
 		goto out_loopcfg;
@@ -7480,6 +7663,7 @@ out_destroy_session:
 out_free_opts:
 	free(opts.mountpoint);
 out:
+	fuse4fs_service_release(ff, ret);
 	return ret;
 }
 
@@ -7498,12 +7682,32 @@ int main(int argc, char *argv[])
 #endif
 		.translate_inums = 1,
 		.write_gdt_on_destroy = 1,
+#ifdef HAVE_FUSE_SERVICE
+		.bdev_fd = -1,
+		.fusedev_fd = -1,
+#endif
 	};
 	errcode_t err;
 	FILE *orig_stderr = stderr;
 	char extra_args[BUFSIZ];
 	bool iomap_detected = false;
 	int ret;
+
+	/* XXX */
+	if (getenv("FUSE4FS_DEBUGGER")) {
+		char *moo = getenv("FUSE4FS_DEBUGGER");
+		int del = atoi(moo);
+
+		fprintf(stderr, "WAITING %ds FOR DEBUGGER\n", del);
+		fflush(stderr);
+		sleep(del);
+	}
+
+	ret = fuse4fs_service_connect(&fctx, &args);
+	if (ret) {
+		fprintf(stderr, "Could not connect to service socket!\n");
+		exit(1);
+	}
 
 	ret = fuse_opt_parse(&args, &fctx, fuse4fs_opts, fuse4fs_opt_proc);
 	if (ret)
@@ -7542,6 +7746,12 @@ int main(int argc, char *argv[])
 	ret = fuse4fs_setup_logging(&fctx);
 	if (ret) {
 		/* operational error */
+		ret = 2;
+		goto out;
+	}
+
+	ret = fuse4fs_service_get_config(&fctx);
+	if (ret) {
 		ret = 2;
 		goto out;
 	}
@@ -7649,7 +7859,7 @@ int main(int argc, char *argv[])
 
 	/* Set up default fuse parameters */
 	snprintf(extra_args, BUFSIZ, "-osubtype=%s,fsname=%s",
-		 get_subtype(argv[0]),
+		 get_subtype(args.argv[0]),
 		 fctx.device);
 	if (fctx.no_default_opts == 0)
 		fuse_opt_add_arg(&args, extra_args);
@@ -7729,6 +7939,7 @@ out:
 	err_shortdev = NULL;
 	if (fctx.device)
 		free(fctx.device);
+	ret = fuse4fs_service_finish(&fctx, ret);
 	fuse_opt_free_args(&args);
 	return ret;
 }

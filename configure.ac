@@ -1507,6 +1507,44 @@ fi
 fi
 
 dnl
+dnl see if fuse3 tells us where to put service sockets
+dnl
+AC_ARG_WITH([fuse_service_socket_dir],
+  [AS_HELP_STRING([--with-fuse-service-socket-dir@<:@=DIR@:>@],
+	[Create fuse3 service sockets in DIR.])],
+  [],
+  [with_fuse_service_socket_dir=yes])
+AS_IF([test "x${with_fuse_service_socket_dir}" != "xno"],
+  [
+	AS_IF([test "x${with_fuse_service_socket_dir}" = "xyes"],
+	  [
+		PKG_CHECK_MODULES([fuse3], [fuse3],
+		  [
+			with_fuse_service_socket_dir="$($PKG_CONFIG --variable=service_socket_dir fuse3)"
+		  ], [
+			with_fuse_service_socket_dir=""
+		  ])
+		m4_pattern_allow([^PKG_(MAJOR|MINOR|BUILD|REVISION)$])
+	  ])
+	AC_MSG_CHECKING([for fuse3 service socket dir])
+	fuse_service_socket_dir="${with_fuse_service_socket_dir}"
+	AS_IF([test -n "${fuse_service_socket_dir}"],
+	  [
+		AC_MSG_RESULT(${fuse_service_socket_dir})
+		have_fuse_service="yes"
+	  ],
+	  [
+		AC_MSG_RESULT(no)
+		have_fuse_service="no"
+	  ])
+  ],
+  [])
+AC_SUBST(fuse_service_socket_dir)
+if test "$have_fuse_service" = yes; then
+  AC_DEFINE(HAVE_FUSE_SERVICE, 1, [Define to 1 if fuse supports service])
+fi
+
+dnl
 dnl set FUSE_USE_VERSION now that we've done all the feature tests
 dnl
 if test -n "$FUSE_USE_VERSION"
