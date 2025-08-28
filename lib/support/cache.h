@@ -6,6 +6,13 @@
 #ifndef __CACHE_H__
 #define __CACHE_H__
 
+/*  2^63 + 2^61 - 2^57 + 2^54 - 2^51 - 2^18 + 1 */
+#define GOLDEN_RATIO_PRIME	0x9e37fffffffc0001UL
+#ifndef CACHE_LINE_SIZE
+/* if the system didn't tell us, guess something reasonable */
+#define CACHE_LINE_SIZE		64
+#endif
+
 /*
  * initialisation flags
  */
