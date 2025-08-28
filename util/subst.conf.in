@@ -24,3 +24,5 @@ root_bindir		@root_bindir@
 libdir			@libdir@
 $exec_prefix		@exec_prefix@
 pkglibexecdir		@libexecdir@/e2fsprogs
+bindir			@bindir@
+fuse_service_socket_dir	@fuse_service_socket_dir@
