@@ -268,6 +268,7 @@ struct fuse4fs {
 	int noblkdev;
 	int translate_inums;
 	int iomap_passthrough_options;
+	int write_gdt_on_destroy;
 
 	enum fuse4fs_opstate opstate;
 	int logfd;
@@ -1475,9 +1476,11 @@ static void op_destroy(void *userdata)
 		if (fs->super->s_error_count)
 			fs->super->s_state |= EXT2_ERROR_FS;
 		ext2fs_mark_super_dirty(fs);
-		err = ext2fs_set_gdt_csum(fs);
-		if (err)
-			translate_error(fs, 0, err);
+		if (ff->write_gdt_on_destroy) {
+			err = ext2fs_set_gdt_csum(fs);
+			if (err)
+				translate_error(fs, 0, err);
+		}
 
 		err = ext2fs_flush2(fs, 0);
 		if (err)
@@ -5803,6 +5806,15 @@ static void op_syncfs(fuse_req_t req, fuse_ino_t ino)
 		}
 	}
 
+	/*
+	 * When iomap is enabled, the kernel will call syncfs right before
+	 * calling the destroy method.  If any syncfs succeeds, then we know
+	 * that there will be a last syncfs and that it will write the GDT, so
+	 * destroy doesn't need to waste time doing that.
+	 */
+	if (fuse4fs_iomap_enabled(ff))
+		ff->write_gdt_on_destroy = 0;
+
 out_unlock:
 	fuse4fs_finish(ff, ret);
 	fuse_reply_err(req, -ret);
@@ -7497,6 +7509,7 @@ int main(int argc, char *argv[])
 		.iomap_dev = FUSE_IOMAP_DEV_NULL,
 #endif
 		.translate_inums = 1,
+		.write_gdt_on_destroy = 1,
 	};
 	errcode_t err;
 	FILE *orig_stderr = stderr;
