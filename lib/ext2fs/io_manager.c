@@ -16,9 +16,12 @@
 #if HAVE_SYS_TYPES_H
 #include <sys/types.h>
 #endif
+#include <stdbool.h>
 
 #include "ext2_fs.h"
 #include "ext2fs.h"
+#include "support/list.h"
+#include "support/cache.h"
 
 errcode_t io_channel_set_options(io_channel channel, const char *opts)
 {
