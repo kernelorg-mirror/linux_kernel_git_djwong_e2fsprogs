@@ -98,20 +98,18 @@ cache_expand(
 
 void
 cache_walk(
-	struct cache *		cache,
+	struct cache		*cache,
 	cache_walk_t		visit)
 {
-	struct cache_hash *	hash;
-	struct list_head *	head;
-	struct list_head *	pos;
+	struct cache_hash	*hash;
+	struct cache_node	*pos;
 	unsigned int		i;
 
 	for (i = 0; i < cache->c_hashsize; i++) {
 		hash = &cache->c_hash[i];
-		head = &hash->ch_list;
 		pthread_mutex_lock(&hash->ch_mutex);
-		for (pos = head->next; pos != head; pos = pos->next)
-			visit((struct cache_node *)pos);
+		list_for_each_entry(pos, &hash->ch_list, cn_hash)
+			visit(pos);
 		pthread_mutex_unlock(&hash->ch_mutex);
 	}
 }
@@ -218,12 +216,9 @@ cache_shake(
 	bool			purge)
 {
 	struct cache_mru	*mru;
-	struct cache_hash *	hash;
+	struct cache_hash	*hash;
 	struct list_head	temp;
-	struct list_head *	head;
-	struct list_head *	pos;
-	struct list_head *	n;
-	struct cache_node *	node;
+	struct cache_node	*node, *n;
 	unsigned int		count;
 
 	ASSERT(priority <= CACHE_DIRTY_PRIORITY);
@@ -233,13 +228,9 @@ cache_shake(
 	mru = &cache->c_mrus[priority];
 	count = 0;
 	list_head_init(&temp);
-	head = &mru->cm_list;
 
 	pthread_mutex_lock(&mru->cm_mutex);
-	for (pos = head->prev, n = pos->prev; pos != head;
-						pos = n, n = pos->prev) {
-		node = list_entry(pos, struct cache_node, cn_mru);
-
+	list_for_each_entry_safe_reverse(node, n, &mru->cm_list, cn_mru) {
 		if (pthread_mutex_trylock(&node->cn_mutex) != 0)
 			continue;
 
@@ -376,31 +367,25 @@ __cache_node_purge(
  */
 int
 cache_node_get(
-	struct cache *		cache,
+	struct cache		*cache,
 	cache_key_t		key,
-	struct cache_node **	nodep)
+	struct cache_node	**nodep)
 {
-	struct cache_node *	node = NULL;
-	struct cache_hash *	hash;
-	struct cache_mru *	mru;
-	struct list_head *	head;
-	struct list_head *	pos;
-	struct list_head *	n;
+	struct cache_hash	*hash;
+	struct cache_mru	*mru;
+	struct cache_node	*node = NULL, *n;
 	unsigned int		hashidx;
 	int			priority = 0;
 	int			purged = 0;
 
 	hashidx = cache->hash(key, cache->c_hashsize, cache->c_hashshift);
 	hash = cache->c_hash + hashidx;
-	head = &hash->ch_list;
 
 	for (;;) {
 		pthread_mutex_lock(&hash->ch_mutex);
-		for (pos = head->next, n = pos->next; pos != head;
-						pos = n, n = pos->next) {
+		list_for_each_entry_safe(node, n, &hash->ch_list, cn_hash) {
 			int result;
 
-			node = list_entry(pos, struct cache_node, cn_hash);
 			result = cache->compare(node, key);
 			switch (result) {
 			case CACHE_HIT:
@@ -568,23 +553,19 @@ cache_node_get_priority(
  */
 int
 cache_node_purge(
-	struct cache *		cache,
+	struct cache		*cache,
 	cache_key_t		key,
-	struct cache_node *	node)
+	struct cache_node	*node)
 {
-	struct list_head *	head;
-	struct list_head *	pos;
-	struct list_head *	n;
-	struct cache_hash *	hash;
+	struct cache_node	*pos, *n;
+	struct cache_hash	*hash;
 	int			count = -1;
 
 	hash = cache->c_hash + cache->hash(key, cache->c_hashsize,
 					   cache->c_hashshift);
-	head = &hash->ch_list;
 	pthread_mutex_lock(&hash->ch_mutex);
-	for (pos = head->next, n = pos->next; pos != head;
-						pos = n, n = pos->next) {
-		if ((struct cache_node *)pos != node)
+	list_for_each_entry_safe(pos, n, &hash->ch_list, cn_hash) {
+		if (pos != node)
 			continue;
 
 		count = __cache_node_purge(cache, node);
@@ -642,12 +623,10 @@ cache_purge(
  */
 void
 cache_flush(
-	struct cache *		cache)
+	struct cache		*cache)
 {
-	struct cache_hash *	hash;
-	struct list_head *	head;
-	struct list_head *	pos;
-	struct cache_node *	node;
+	struct cache_hash	*hash;
+	struct cache_node	*node;
 	int			i;
 
 	if (!cache->flush)
@@ -657,9 +636,7 @@ cache_flush(
 		hash = &cache->c_hash[i];
 
 		pthread_mutex_lock(&hash->ch_mutex);
-		head = &hash->ch_list;
-		for (pos = head->next; pos != head; pos = pos->next) {
-			node = (struct cache_node *)pos;
+		list_for_each_entry(node, &hash->ch_list, cn_hash) {
 			pthread_mutex_lock(&node->cn_mutex);
 			cache->flush(node);
 			pthread_mutex_unlock(&node->cn_mutex);
