@@ -53,6 +53,9 @@
 #include "ext2fs/ext2_fs.h"
 #include "ext2fs/ext2fsP.h"
 #include "support/bthread.h"
+#include "support/list.h"
+#include "support/cache.h"
+#include "support/iocache.h"
 
 #include "../version.h"
 #include "uuid/uuid.h"
@@ -1405,6 +1408,7 @@ static errcode_t fuse2fs_open(struct fuse2fs *ff)
 		flags |= EXT2_FLAG_DIRECT_IO;
 
 	dbg_printf(ff, "opening with flags=0x%x\n", flags);
+	iocache_set_backing_manager(unix_io_manager);
 
 	err = fuse2fs_try_losetup(ff, flags);
 	if (err)
@@ -1442,7 +1446,7 @@ static errcode_t fuse2fs_open(struct fuse2fs *ff)
 	deadline = init_deadline(FUSE2FS_OPEN_TIMEOUT);
 	do {
 		err = ext2fs_open2(fuse2fs_device(ff), options, flags, 0, 0,
-				   unix_io_manager, &ff->fs);
+				   iocache_io_manager, &ff->fs);
 		if ((err == EPERM || err == EACCES) &&
 		    (!ff->ro || (flags & EXT2_FLAG_RW))) {
 			/*
