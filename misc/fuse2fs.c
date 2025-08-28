@@ -50,6 +50,9 @@
 #include "ext2fs/ext2fs.h"
 #include "ext2fs/ext2_fs.h"
 #include "ext2fs/ext2fsP.h"
+#include "support/list.h"
+#include "support/cache.h"
+#include "support/iocache.h"
 
 #include "../version.h"
 #include "uuid/uuid.h"
@@ -283,7 +286,6 @@ struct fuse2fs {
 	unsigned int blockmask;
 	unsigned long offset;
 	unsigned int next_generation;
-	unsigned long long cache_size;
 	char *lockfile;
 #ifdef HAVE_CLOCK_MONOTONIC
 	struct timespec lock_start_time;
@@ -1119,7 +1121,8 @@ static errcode_t fuse2fs_open(struct fuse2fs *ff, int libext2_flags)
 
 	dbg_printf(ff, "opening with flags=0x%x\n", flags);
 
-	err = ext2fs_open2(ff->device, options, flags, 0, 0, unix_io_manager,
+	iocache_set_backing_manager(unix_io_manager);
+	err = ext2fs_open2(ff->device, options, flags, 0, 0, iocache_io_manager,
 			   &ff->fs);
 	if (err == EPERM) {
 		err_printf(ff, "%s.\n",
@@ -1128,7 +1131,7 @@ static errcode_t fuse2fs_open(struct fuse2fs *ff, int libext2_flags)
 		ff->ro = 1;
 		ff->norecovery = 1;
 		err = ext2fs_open2(ff->device, options, flags, 0, 0,
-				   unix_io_manager, &ff->fs);
+				   iocache_io_manager, &ff->fs);
 	}
 	if (err) {
 		err_printf(ff, "%s.\n", error_message(err));
@@ -1145,25 +1148,6 @@ static errcode_t fuse2fs_open(struct fuse2fs *ff, int libext2_flags)
 static inline bool fuse2fs_on_bdev(const struct fuse2fs *ff)
 {
 	return ff->fs->io->flags & CHANNEL_FLAGS_BLOCK_DEVICE;
-}
-
-static errcode_t fuse2fs_config_cache(struct fuse2fs *ff)
-{
-	char buf[128];
-	errcode_t err;
-
-	snprintf(buf, sizeof(buf), "cache_blocks=%llu",
-		 FUSE2FS_B_TO_FSBT(ff, ff->cache_size));
-	err = io_channel_set_options(ff->fs->io, buf);
-	if (err) {
-		err_printf(ff, "%s %lluk: %s\n",
-			   _("cannot set disk cache size to"),
-			   ff->cache_size >> 10,
-			   error_message(err));
-		return err;
-	}
-
-	return 0;
 }
 
 static errcode_t fuse2fs_check_support(struct fuse2fs *ff)
@@ -6750,7 +6734,6 @@ enum {
 	FUSE2FS_VERSION,
 	FUSE2FS_HELP,
 	FUSE2FS_HELPFULL,
-	FUSE2FS_CACHE_SIZE,
 	FUSE2FS_DIRSYNC,
 	FUSE2FS_ERRORS_BEHAVIOR,
 #ifdef HAVE_FUSE_IOMAP
@@ -6800,7 +6783,6 @@ static struct fuse_opt fuse2fs_opts[] = {
 	FUSE_OPT_KEY("user_xattr",	FUSE2FS_IGNORED),
 	FUSE_OPT_KEY("noblock_validity", FUSE2FS_IGNORED),
 	FUSE_OPT_KEY("nodelalloc",	FUSE2FS_IGNORED),
-	FUSE_OPT_KEY("cache_size=%s",	FUSE2FS_CACHE_SIZE),
 	FUSE_OPT_KEY("dirsync",		FUSE2FS_DIRSYNC),
 	FUSE_OPT_KEY("errors=%s",	FUSE2FS_ERRORS_BEHAVIOR),
 #ifdef HAVE_FUSE_IOMAP
@@ -6839,16 +6821,6 @@ static int fuse2fs_opt_proc(void *data, const char *arg,
 			return 0;
 		}
 		return 1;
-	case FUSE2FS_CACHE_SIZE:
-		ff->cache_size = parse_num_blocks2(arg + 11, -1);
-		if (ff->cache_size < 1 || ff->cache_size > INT32_MAX) {
-			fprintf(stderr, "%s: %s\n", arg,
- _("cache size must be between 1 block and 2GB."));
-			return -1;
-		}
-
-		/* do not pass through to libfuse */
-		return 0;
 	case FUSE2FS_ERRORS_BEHAVIOR:
 		if (strcmp(arg + 7, "continue") == 0)
 			ff->errors_behavior = EXT2_ERRORS_CONTINUE;
@@ -6905,7 +6877,6 @@ static int fuse2fs_opt_proc(void *data, const char *arg,
 	"    -o kernel              run this as if it were the kernel, which sets:\n"
 	"                           allow_others,default_permissions,suid,dev\n"
 	"    -o directio            use O_DIRECT to read and write the disk\n"
-	"    -o cache_size=N[KMG]   use a disk cache of this size\n"
 	"    -o errors=             behavior when an error is encountered:\n"
 	"                           continue|remount-ro|panic\n"
 #ifdef HAVE_FUSE_IOMAP
@@ -6947,28 +6918,6 @@ static const char *get_subtype(const char *argv0)
 
 out_default:
 	return "ext4";
-}
-
-/* Figure out a reasonable default size for the disk cache */
-static unsigned long long default_cache_size(void)
-{
-	long pages = 0, pagesize = 0;
-	unsigned long long max_cache;
-	unsigned long long ret = 32ULL << 20; /* 32 MB */
-
-#ifdef _SC_PHYS_PAGES
-	pages = sysconf(_SC_PHYS_PAGES);
-#endif
-#ifdef _SC_PAGESIZE
-	pagesize = sysconf(_SC_PAGESIZE);
-#endif
-	if (pages > 0 && pagesize > 0) {
-		max_cache = (unsigned long long)pagesize * pages / 20;
-
-		if (max_cache > 0 && ret > max_cache)
-			ret = max_cache;
-	}
-	return ret;
 }
 
 #ifdef HAVE_FUSE_IOMAP
@@ -7128,16 +7077,6 @@ int main(int argc, char *argv[])
 			   _("Some mount options require iomap."));
 		ret |= 1;
 		goto out;
-	}
-
-	if (!fctx.cache_size)
-		fctx.cache_size = default_cache_size();
-	if (fctx.cache_size) {
-		err = fuse2fs_config_cache(&fctx);
-		if (err) {
-			ret = 32;
-			goto out;
-		}
 	}
 
 	err = fuse2fs_check_support(&fctx);
