@@ -1385,6 +1385,7 @@ dnl
 dnl Set FUSE_USE_VERSION, which is how fuse servers build against a particular
 dnl libfuse ABI.  Currently we link against the libfuse 3.14 ABI (hence 314)
 dnl
+have_fuse_iomap=
 if test -n "$FUSE_LIB"
 then
 	FUSE_USE_VERSION=314
@@ -1394,11 +1395,41 @@ then
 		[AC_MSG_FAILURE([Cannot build against fuse3 headers])],
 [#define _FILE_OFFSET_BITS	64
 #define FUSE_USE_VERSION	314])
+
+	dnl
+	dnl Check if the fuse library supports iomap, which requires a higher
+	dnl FUSE_USE_VERSION ABI version (3.99)
+	dnl
+	AC_MSG_CHECKING(for iomap_begin in libfuse)
+	AC_LINK_IFELSE(
+	[	AC_LANG_PROGRAM([[
+	#define _GNU_SOURCE
+	#define _FILE_OFFSET_BITS	64
+	#define FUSE_USE_VERSION	399
+	#include <fuse.h>
+		]], [[
+	struct fuse_operations fs_ops = {
+		.iomap_begin = NULL,
+		.iomap_end = NULL,
+	};
+	struct fuse_file_iomap narf = { };
+		]])
+	], have_fuse_iomap=yes
+	   AC_MSG_RESULT(yes),
+	   AC_MSG_RESULT(no))
+	if test "$have_fuse_iomap" = yes
+	then
+		FUSE_USE_VERSION=399
+	fi
 fi
 if test -n "$FUSE_USE_VERSION"
 then
 	AC_DEFINE_UNQUOTED(FUSE_USE_VERSION, $FUSE_USE_VERSION,
 		[Define to the version of FUSE to use])
+fi
+if test -n "$have_fuse_iomap"
+then
+	AC_DEFINE(HAVE_FUSE_IOMAP, 1, [Define to 1 if fuse supports iomap])
 fi
 
 dnl
