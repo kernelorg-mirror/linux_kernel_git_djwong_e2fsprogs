@@ -56,7 +56,7 @@ struct cache_node;
 
 typedef void *cache_key_t;
 
-typedef void (*cache_walk_t)(struct cache *c, struct cache_node *cn);
+typedef void (*cache_walk_t)(struct cache *c, struct cache_node *cn, void *d);
 typedef struct cache_node * (*cache_node_alloc_t)(struct cache *c, cache_key_t k);
 typedef int (*cache_node_flush_t)(struct cache *c, struct cache_node *cn);
 typedef void (*cache_node_relse_t)(struct cache *c, struct cache_node *cn);
@@ -130,7 +130,7 @@ static inline bool cache_initialized(const struct cache *cache)
 int cache_init(int flags, unsigned int size,
 	       const struct cache_operations *ops, struct cache *cache);
 void cache_destroy(struct cache *cache);
-void cache_walk(struct cache *, cache_walk_t);
+void cache_walk(struct cache *cache, cache_walk_t fn, void *data);
 void cache_purge(struct cache *);
 void cache_flush(struct cache *);
 
