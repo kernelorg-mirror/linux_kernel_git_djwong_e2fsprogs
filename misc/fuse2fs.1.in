@@ -48,12 +48,6 @@ minix-style df
 \fB-o\fR acl
 enable file access control lists
 .TP
-\fB-o\fR cache_size
-Set the disk cache size to this quantity.
-The quantity may contain the suffixes k, m, or g.
-By default, the size is 32MB.
-The size may not be larger than 2GB.
-.TP
 \fB-o\fR direct
 Use O_DIRECT to access the block device.
 .TP
