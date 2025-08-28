@@ -73,6 +73,9 @@
 /* Define to 1 if PR_SET_IO_FLUSHER is present */
 #undef HAVE_PR_SET_IO_FLUSHER
 
+/* Define to 1 if fuse supports lowlevel API */
+#undef HAVE_FUSE_LOWLEVEL
+
 /* Define to 1 if you have the Mac OS X function
    CFLocaleCopyPreferredLanguages in the CoreFoundation framework. */
 #undef HAVE_CFLOCALECOPYPREFERREDLANGUAGES
