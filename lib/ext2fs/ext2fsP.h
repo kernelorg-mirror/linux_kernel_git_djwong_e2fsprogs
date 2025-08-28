@@ -82,21 +82,26 @@ struct dir_context {
 	errcode_t	errcode;
 };
 
+#include "support/list.h"
+#include "support/cache.h"
+
 /*
  * Inode cache structure
  */
 struct ext2_inode_cache {
 	void *				buffer;
 	blk64_t				buffer_blk;
-	int				cache_last;
-	unsigned int			cache_size;
 	int				refcount;
-	struct ext2_inode_cache_ent	*cache;
+	struct cache			cache;
 };
 
 struct ext2_inode_cache_ent {
+	struct cache_node	node;
 	ext2_ino_t		ino;
-	struct ext2_inode	*inode;
+	uint8_t			access;
+
+	/* bytes representing a host-endian ext2_inode_large object */
+	char			raw[];
 };
 
 /*

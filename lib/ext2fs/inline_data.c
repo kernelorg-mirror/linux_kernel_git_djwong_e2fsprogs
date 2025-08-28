@@ -817,10 +817,6 @@ int main(int argc, char *argv[])
 				"tst_inline_data: init inode cache failed\n");
 			exit(1);
 		}
-
-		/* setup inode cache */
-		for (i = 0; i < fs->icache->cache_size; i++)
-			fs->icache->cache[i].ino = first_ino++;
 	}
 
 	/* test */
