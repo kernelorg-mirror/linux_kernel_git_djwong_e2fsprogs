@@ -218,6 +218,11 @@ struct fuse2fs_file_handle {
 	int check_flags;
 };
 
+enum fuse2fs_opstate {
+	F2OP_READONLY,
+	F2OP_WRITABLE,
+};
+
 /* Main program context */
 #define FUSE2FS_MAGIC		(0xEF53DEADUL)
 struct fuse2fs {
@@ -243,6 +248,7 @@ struct fuse2fs {
 	int unmount_in_destroy;
 	int noblkdev;
 
+	enum fuse2fs_opstate opstate;
 	int logfd;
 	int blocklog;
 	unsigned int blockmask;
@@ -611,8 +617,6 @@ static int update_atime(ext2_filsys fs, ext2_ino_t ino)
 	struct timespec atime, mtime, now;
 	double datime, dmtime, dnow;
 
-	if (!(fs->flags & EXT2_FLAG_RW))
-		return 0;
 	err = fuse2fs_read_inode(fs, ino, &inode);
 	if (err)
 		return translate_error(fs, ino, err);
@@ -728,9 +732,8 @@ static int fs_can_allocate(struct fuse2fs *ff, blk64_t num)
 
 static int fuse2fs_is_writeable(struct fuse2fs *ff)
 {
-	ext2_filsys fs = ff->fs;
-
-	return (fs->flags & EXT2_FLAG_RW) && (fs->super->s_error_count == 0);
+	return ff->opstate == F2OP_WRITABLE &&
+		(ff->fs->super->s_error_count == 0);
 }
 
 static inline int is_superuser(struct fuse2fs *ff, struct fuse_context *ctxt)
@@ -946,6 +949,7 @@ static errcode_t fuse2fs_open(struct fuse2fs *ff, int libext2_flags)
 	}
 
 	snprintf(options, sizeof(options) - 1, "offset=%lu", ff->offset);
+	ff->opstate = F2OP_READONLY;
 
 	if (ff->directio)
 		flags |= EXT2_FLAG_DIRECT_IO;
@@ -1086,6 +1090,7 @@ static errcode_t fuse2fs_mount(struct fuse2fs *ff)
 			translate_error(fs, 0, err);
 			return err;
 		}
+		ff->opstate = F2OP_WRITABLE;
 	}
 
 	if (!(fs->super->s_state & EXT2_VALID_FS))
@@ -1108,7 +1113,7 @@ static errcode_t fuse2fs_mount(struct fuse2fs *ff)
 		ff->errors_behavior = fs->super->s_errors;
 
 	/* Clear the valid flag so that an unclean shutdown forces a fsck */
-	if (fs->flags & EXT2_FLAG_RW) {
+	if (ff->opstate == F2OP_WRITABLE) {
 		fs->super->s_mnt_count++;
 		ext2fs_set_tstamp(fs->super, s_mtime, time(NULL));
 		fs->super->s_state &= ~EXT2_VALID_FS;
@@ -1132,7 +1137,7 @@ static void op_destroy(void *p EXT2FS_ATTR((unused)))
 	fs = fuse2fs_start(ff);
 
 	dbg_printf(ff, "%s: dev=%s\n", __func__, fs->device_name);
-	if (fs->flags & EXT2_FLAG_RW) {
+	if (ff->opstate == F2OP_WRITABLE) {
 		fs->super->s_state |= EXT2_VALID_FS;
 		if (fs->super->s_error_count)
 			fs->super->s_state |= EXT2_ERROR_FS;
@@ -3407,7 +3412,7 @@ static int op_statfs(const char *path EXT2FS_ATTR((unused)),
 	fsid ^= *f;
 	buf->f_fsid = fsid;
 	buf->f_flag = 0;
-	if (!(fs->flags & EXT2_FLAG_RW))
+	if (ff->opstate != F2OP_WRITABLE)
 		buf->f_flag |= ST_RDONLY;
 	buf->f_namemax = EXT2_NAME_LEN;
 	fuse2fs_finish(ff, 0);
@@ -5198,6 +5203,7 @@ int main(int argc, char *argv[])
 	memset(&fctx, 0, sizeof(fctx));
 	fctx.magic = FUSE2FS_MAGIC;
 	fctx.logfd = -1;
+	fctx.opstate = F2OP_WRITABLE;
 
 	ret = fuse_opt_parse(&args, &fctx, fuse2fs_opts, fuse2fs_opt_proc);
 	if (ret)
@@ -5572,9 +5578,11 @@ static int __translate_error(ext2_filsys fs, ext2_ino_t ino, errcode_t err,
  _("Continuing after errors; is this a good idea?"));
 		break;
 	case EXT2_ERRORS_RO:
-		if (fs->flags & EXT2_FLAG_RW)
+		if (ff->opstate == F2OP_WRITABLE) {
 			err_printf(ff, "%s\n",
  _("Remounting read-only due to errors."));
+			ff->opstate = F2OP_READONLY;
+		}
 		fs->flags &= ~EXT2_FLAG_RW;
 		break;
 	case EXT2_ERRORS_PANIC:
