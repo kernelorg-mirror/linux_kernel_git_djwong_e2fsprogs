@@ -265,6 +265,7 @@ struct fuse2fs {
 	int directio;
 	int acl;
 	int dirsync;
+	int iomap_passthrough_options;
 
 	enum fuse2fs_opstate opstate;
 	int logfd;
@@ -1684,6 +1685,8 @@ static void fuse2fs_iomap_enable(struct fuse_conn_info *conn,
 	if (!fuse2fs_iomap_enabled(ff)) {
 		if (ff->iomap_want == FT_ENABLE)
 			err_printf(ff, "%s\n", _("Could not enable iomap."));
+		if (ff->iomap_passthrough_options)
+			err_printf(ff, "%s\n", _("Some mount options require iomap."));
 		return;
 	}
 }
@@ -6887,6 +6890,7 @@ enum {
 	FUSE2FS_ERRORS_BEHAVIOR,
 #ifdef HAVE_FUSE_IOMAP
 	FUSE2FS_IOMAP,
+	FUSE2FS_IOMAP_PASSTHROUGH,
 #endif
 };
 
@@ -6910,6 +6914,17 @@ static struct fuse_opt fuse2fs_opts[] = {
 	FUSE2FS_OPT("lockfile=%s",	lockfile,		0),
 #ifdef HAVE_CLOCK_MONOTONIC
 	FUSE2FS_OPT("timing",		timing,			1),
+#endif
+
+#ifdef HAVE_FUSE_IOMAP
+#ifdef MS_LAZYTIME
+	FUSE_OPT_KEY("lazytime",	FUSE2FS_IOMAP_PASSTHROUGH),
+	FUSE_OPT_KEY("nolazytime",	FUSE2FS_IOMAP_PASSTHROUGH),
+#endif
+#ifdef MS_STRICTATIME
+	FUSE_OPT_KEY("strictatime",	FUSE2FS_IOMAP_PASSTHROUGH),
+	FUSE_OPT_KEY("nostrictatime",	FUSE2FS_IOMAP_PASSTHROUGH),
+#endif
 #endif
 
 	FUSE_OPT_KEY("user_xattr",	FUSE2FS_IGNORED),
@@ -6938,6 +6953,12 @@ static int fuse2fs_opt_proc(void *data, const char *arg,
 	struct fuse2fs *ff = data;
 
 	switch (key) {
+#ifdef HAVE_FUSE_IOMAP
+	case FUSE2FS_IOMAP_PASSTHROUGH:
+		ff->iomap_passthrough_options = 1;
+		/* pass through to libfuse */
+		return 1;
+#endif
 	case FUSE2FS_DIRSYNC:
 		ff->dirsync = 1;
 		/* pass through to libfuse */
@@ -7182,6 +7203,13 @@ int main(int argc, char *argv[])
 	err = fuse2fs_open(&fctx, EXT2_FLAG_EXCLUSIVE);
 	if (err) {
 		ret = 32;
+		goto out;
+	}
+
+	if (fctx.iomap_passthrough_options && !fuse2fs_can_iomap(&fctx)) {
+		err_printf(&fctx, "%s\n",
+			   _("Some mount options require iomap."));
+		ret |= 1;
 		goto out;
 	}
 
