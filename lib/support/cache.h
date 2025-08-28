@@ -66,6 +66,14 @@ typedef int (*cache_node_compare_t)(struct cache_node *, cache_key_t);
 typedef unsigned int (*cache_bulk_relse_t)(struct cache *, struct list_head *);
 typedef int (*cache_node_get_t)(struct cache *c, struct cache_node *cn);
 typedef void (*cache_node_put_t)(struct cache *c, struct cache_node *cn);
+typedef unsigned int (*cache_node_resize_t)(const struct cache *c,
+					    unsigned int curr_size);
+
+static inline unsigned int cache_gradual_resize(const struct cache *cache,
+						unsigned int curr_size)
+{
+	return curr_size * 5 / 4;
+}
 
 struct cache_operations {
 	cache_node_hash_t	hash;
@@ -76,6 +84,7 @@ struct cache_operations {
 	cache_bulk_relse_t	bulkrelse;	/* optional */
 	cache_node_get_t	get;		/* optional */
 	cache_node_put_t	put;		/* optional */
+	cache_node_resize_t	resize;		/* optional */
 };
 
 struct cache_hash {
@@ -113,6 +122,7 @@ struct cache {
 	cache_bulk_relse_t	bulkrelse;	/* bulk release routine */
 	cache_node_get_t	get;		/* prepare cache node after get */
 	cache_node_put_t	put;		/* prepare to put cache node */
+	cache_node_resize_t	resize;		/* compute new maxcount */
 	unsigned int		c_hashsize;	/* hash bucket count */
 	unsigned int		c_hashshift;	/* hash key shift */
 	struct cache_hash	*c_hash;	/* hash table buckets */
