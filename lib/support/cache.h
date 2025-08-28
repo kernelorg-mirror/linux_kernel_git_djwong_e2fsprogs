@@ -16,7 +16,11 @@
  */
 #define CACHE_MISCOMPARE_PURGE	(1 << 0)
 
-#define CACHE_FLAGS_ALL		(CACHE_MISCOMPARE_PURGE)
+/* Automatically shrink the cache's max_count when possible. */
+#define CACHE_AUTO_SHRINK	(1 << 1)
+
+#define CACHE_FLAGS_ALL		(CACHE_MISCOMPARE_PURGE | \
+				 CACHE_AUTO_SHRINK)
 
 /*
  * cache object campare return values
@@ -69,12 +73,18 @@ typedef unsigned int (*cache_bulk_relse_t)(struct cache *, struct list_head *);
 typedef int (*cache_node_get_t)(struct cache *c, struct cache_node *cn);
 typedef void (*cache_node_put_t)(struct cache *c, struct cache_node *cn);
 typedef unsigned int (*cache_node_resize_t)(const struct cache *c,
-					    unsigned int curr_size);
+					    unsigned int curr_size,
+					    int dir);
 
 static inline unsigned int cache_gradual_resize(const struct cache *cache,
-						unsigned int curr_size)
+						unsigned int curr_size,
+						int dir)
 {
-	return curr_size * 5 / 4;
+	if (dir < 0)
+		return curr_size * 9 / 10;
+	else if (dir > 0)
+		return curr_size * 5 / 4;
+	return curr_size;
 }
 
 struct cache_operations {
@@ -113,6 +123,7 @@ struct cache_node {
 
 struct cache {
 	int			c_flags;	/* behavioural flags */
+	unsigned int		c_orig_max;	/* original max cache nodes */
 	unsigned int		c_maxcount;	/* max cache nodes */
 	unsigned int		c_count;	/* count of nodes */
 	pthread_mutex_t		c_mutex;	/* node count mutex */
@@ -145,6 +156,7 @@ void cache_destroy(struct cache *cache);
 void cache_walk(struct cache *cache, cache_walk_t fn, void *data);
 void cache_purge(struct cache *);
 bool cache_flush(struct cache *cache);
+void cache_shrink(struct cache *cache);
 
 void cache_set_maxcount(struct cache *cache, unsigned int maxcount);
 int cache_set_flag(struct cache *cache, int flags);
