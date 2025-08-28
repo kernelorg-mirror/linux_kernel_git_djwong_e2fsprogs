@@ -53,6 +53,7 @@ cache_init(
 	cache->c_hits = 0;
 	cache->c_misses = 0;
 	cache->c_maxcount = maxcount;
+	cache->c_orig_max = maxcount;
 	cache->hash = cache_operations->hash;
 	cache->alloc = cache_operations->alloc;
 	cache->flush = cache_operations->flush;
@@ -93,6 +94,7 @@ cache_set_maxcount(
 	unsigned int		maxcount)
 {
 	pthread_mutex_lock(&cache->c_mutex);
+	cache->c_orig_max = maxcount;
 	cache->c_maxcount = maxcount;
 	pthread_mutex_unlock(&cache->c_mutex);
 }
@@ -123,7 +125,7 @@ cache_expand(
 
 	pthread_mutex_lock(&cache->c_mutex);
 	if (cache->resize)
-		new_size = cache->resize(cache, cache->c_maxcount);
+		new_size = cache->resize(cache, cache->c_maxcount, 1);
 	if (new_size <= cache->c_maxcount)
 		new_size = cache->c_maxcount * 2;
 #ifdef CACHE_DEBUG
@@ -254,7 +256,8 @@ static unsigned int
 cache_shake(
 	struct cache *		cache,
 	unsigned int		priority,
-	bool			purge)
+	bool			purge,
+	unsigned int		nr_to_shake)
 {
 	struct cache_mru	*mru;
 	struct cache_hash	*hash;
@@ -302,7 +305,7 @@ cache_shake(
 		pthread_mutex_unlock(&node->cn_mutex);
 
 		count++;
-		if (!purge && count == CACHE_SHAKE_COUNT)
+		if (!purge && count == nr_to_shake)
 			break;
 	}
 	pthread_mutex_unlock(&mru->cm_mutex);
@@ -315,7 +318,7 @@ cache_shake(
 		pthread_mutex_unlock(&cache->c_mutex);
 	}
 
-	return (count == CACHE_SHAKE_COUNT) ? priority : ++priority;
+	return (count == nr_to_shake) ? priority : ++priority;
 }
 
 /*
@@ -505,7 +508,7 @@ next_object:
 		node = cache_node_allocate(cache, key);
 		if (node)
 			break;
-		priority = cache_shake(cache, priority, false);
+		priority = cache_shake(cache, priority, false, CACHE_SHAKE_COUNT);
 		/*
 		 * We start at 0; if we free CACHE_SHAKE_COUNT we get
 		 * back the same priority, if not we get back priority+1.
@@ -535,12 +538,112 @@ next_object:
 	return 1;
 }
 
+static unsigned int cache_mru_count(const struct cache *cache)
+{
+	const struct cache_mru	*mru = cache->c_mrus;
+	unsigned int		mru_count = 0;
+	unsigned int		i;
+
+	for (i = 0; i < CACHE_NR_PRIORITIES; i++, mru++)
+		mru_count += mru->cm_count;
+
+	return mru_count;
+}
+
+
+void cache_shrink(struct cache *cache)
+{
+	unsigned int		mru_count = 0;
+	unsigned int		threshold = 0;
+	unsigned int		priority = 0;
+	unsigned int		new_size;
+
+	pthread_mutex_lock(&cache->c_mutex);
+	/* Don't shrink below the original cache size */
+	if (cache->c_maxcount <= cache->c_orig_max)
+		goto out_unlock;
+
+	mru_count = cache_mru_count(cache);
+
+	/*
+	 * If there's not even a batch of nodes on the MRU to try to free,
+	 * don't bother with the rest.
+	 */
+	if (mru_count < CACHE_SHAKE_COUNT)
+		goto out_unlock;
+
+	/*
+	 * Figure out the next step down in size, but don't go below the
+	 * original size.
+	 */
+	if (cache->resize)
+		new_size = cache->resize(cache, cache->c_maxcount, -1);
+	else
+		new_size = cache->c_maxcount / 2;
+	if (new_size >= cache->c_maxcount)
+		goto out_unlock;
+	if (new_size < cache->c_orig_max)
+		new_size = cache->c_orig_max;
+
+	/*
+	 * If we can't purge enough nodes to get the node count below new_size,
+	 * don't resize the cache.
+	 */
+	if (cache->c_count - mru_count >= new_size)
+		goto out_unlock;
+
+#ifdef CACHE_DEBUG
+	fprintf(stderr, "decreasing cache max size from %u to %u (currently %u)\n",
+		cache->c_maxcount, new_size, cache->c_count);
+#endif
+	cache->c_maxcount = new_size;
+
+	/* Try to reduce the number of cached objects. */
+	do {
+		unsigned int new_priority;
+
+		/*
+		 * The threshold is the amount we need to purge to get c_count
+		 * below the new maxcount.  Try to free some objects off the
+		 * MRU.  Drop c_mutex because cache_shake will take it.
+		 */
+		threshold = cache->c_count - new_size;
+		pthread_mutex_unlock(&cache->c_mutex);
+
+		new_priority = cache_shake(cache, priority, false, threshold);
+
+		/* Either we made no progress or we ran out of MRU levels */
+		if (new_priority == priority ||
+		    new_priority > CACHE_MAX_PRIORITY)
+			return;
+		priority = new_priority;
+
+		pthread_mutex_lock(&cache->c_mutex);
+		/*
+		 * Someone could have walked in and changed the cache maxsize
+		 * again while we had the lock dropped.  If that happened, stop
+		 * clearing.
+		 */
+		if (cache->c_maxcount != new_size)
+			goto out_unlock;
+
+		mru_count = cache_mru_count(cache);
+		if (cache->c_count - mru_count >= new_size)
+			goto out_unlock;
+	} while (1);
+
+out_unlock:
+	pthread_mutex_unlock(&cache->c_mutex);
+	return;
+}
+
 void
 cache_node_put(
 	struct cache *		cache,
 	struct cache_node *	node)
 {
 	struct cache_mru *	mru;
+	bool was_put = false;
 
 	pthread_mutex_lock(&node->cn_mutex);
 #ifdef CACHE_DEBUG
@@ -556,6 +659,7 @@ cache_node_put(
 	}
 #endif
 	node->cn_count--;
+	was_put = (node->cn_count == 0);
 
 	if (node->cn_count == 0 && cache->put)
 		cache->put(cache, node);
@@ -569,6 +673,9 @@ cache_node_put(
 	}
 
 	pthread_mutex_unlock(&node->cn_mutex);
+
+	if (was_put && (cache->c_flags & CACHE_AUTO_SHRINK))
+		cache_shrink(cache);
 }
 
 void
@@ -660,7 +767,7 @@ cache_purge(
 	int			i;
 
 	for (i = 0; i <= CACHE_DIRTY_PRIORITY; i++)
-		cache_shake(cache, i, true);
+		cache_shake(cache, i, true, CACHE_SHAKE_COUNT);
 
 #ifdef CACHE_DEBUG
 	if (cache->c_count != 0) {
