@@ -1399,6 +1399,32 @@ then
 fi
 
 dnl
+dnl Check if the FUSE lowlevel library is supported
+dnl
+have_fuse_lowlevel=
+if test -n "$FUSE_USE_VERSION"
+then
+	AC_MSG_CHECKING(for lowlevel interface in libfuse)
+	AC_LINK_IFELSE(
+	[	AC_LANG_PROGRAM([[
+	#define _GNU_SOURCE
+	#define _FILE_OFFSET_BITS	64
+	#define FUSE_USE_VERSION	314
+	#include <fuse_lowlevel.h>
+		]], [[
+	struct fuse_lowlevel_ops fs_ops = { };
+		]])
+	], have_fuse_lowlevel=yes
+	   AC_MSG_RESULT(yes),
+	   AC_MSG_RESULT(no))
+fi
+if test -n "$have_fuse_lowlevel"
+then
+	AC_DEFINE(HAVE_FUSE_LOWLEVEL, 1,
+		  [Define to 1 if fuse supports lowlevel API])
+fi
+
+dnl
 dnl Check if fuse2fs is actually built.
 dnl
 FUSE2FS_CMT=
@@ -1434,6 +1460,43 @@ AS_HELP_STRING([--disable-fuse2fs],[do not build fuse2fs]),
 ]
 )
 AC_SUBST(FUSE2FS_CMT)
+
+dnl
+dnl Check if fuse4fs is actually built.
+dnl
+FUSE4FS_CMT=
+AC_ARG_ENABLE([fuse4fs],
+AS_HELP_STRING([--disable-fuse4fs],[do not build fuse4fs]),
+[
+	if test "$enableval" = "no"
+	then
+		FUSE4FS_CMT="#"
+		AC_MSG_RESULT([Disabling fuse4fs])
+	else
+		AC_PREPROC_IFELSE(
+	[AC_LANG_PROGRAM([[#ifdef __linux__
+	#include <linux/fs.h>
+	#include <linux/falloc.h>
+	#include <linux/xattr.h>
+	#endif
+	]], [])], [], [AC_MSG_FAILURE([Cannot find fuse4fs Linux headers])])
+
+		if test -z "$have_fuse_lowlevel"
+		then
+			AC_MSG_FAILURE([Cannot find fuse lowlevel library.])
+		fi
+		AC_MSG_RESULT([Enabling fuse4fs])
+	fi
+], [
+	if test -n "$have_fuse_lowlevel"
+	then
+		AC_MSG_RESULT([Enabling fuse4fs by default])
+	else
+		AC_MSG_RESULT([Disabling fuse4fs by default])
+	fi
+]
+)
+AC_SUBST(FUSE4FS_CMT)
 
 dnl
 dnl see if PR_SET_IO_FLUSHER exists
@@ -2042,7 +2105,7 @@ for i in MCONFIG Makefile \
 	misc/Makefile ext2ed/Makefile e2fsck/Makefile \
 	debugfs/Makefile tests/Makefile tests/progs/Makefile \
 	tests/fuzz/Makefile resize/Makefile doc/Makefile \
-	po/Makefile.in scrub/Makefile; do
+	po/Makefile.in scrub/Makefile fuse4fs/Makefile; do
 	if test -d `dirname ${srcdir}/$i` ; then
 		outlist="$outlist $i"
 	fi
