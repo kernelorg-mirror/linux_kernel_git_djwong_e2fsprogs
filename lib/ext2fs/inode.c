@@ -59,18 +59,145 @@ struct ext2_struct_inode_scan {
 	int			reserved[6];
 };
 
+struct ext2_inode_cache_key {
+	ext2_filsys		fs;
+	ext2_ino_t		ino;
+};
+
+#define ICKEY(key)	((struct ext2_inode_cache_key *)(key))
+#define ICNODE(node)	(container_of((node), struct ext2_inode_cache_ent, node))
+
+static unsigned int
+ext2_inode_cache_hash(cache_key_t key, unsigned int hashsize,
+		      unsigned int hashshift)
+{
+	uint64_t	hashval = ICKEY(key)->ino;
+	uint64_t	tmp;
+
+	tmp = hashval ^ (GOLDEN_RATIO_PRIME + hashval) / CACHE_LINE_SIZE;
+	tmp = tmp ^ ((tmp ^ GOLDEN_RATIO_PRIME) >> hashshift);
+	return tmp % hashsize;
+}
+
+static int ext2_inode_cache_compare(struct cache_node *node, cache_key_t key)
+{
+	struct ext2_inode_cache_ent *ent = ICNODE(node);
+	struct ext2_inode_cache_key *ikey = ICKEY(key);
+
+	if (ent->ino == ikey->ino)
+		return CACHE_HIT;
+
+	return CACHE_MISS;
+}
+
+static struct cache_node *ext2_inode_cache_alloc(struct cache *c,
+						 cache_key_t key)
+{
+	struct ext2_inode_cache_key *ikey = ICKEY(key);
+	struct ext2_inode_cache_ent *ent;
+
+	ent = calloc(1, sizeof(struct ext2_inode_cache_ent) +
+			EXT2_INODE_SIZE(ikey->fs->super));
+	if (!ent)
+		return NULL;
+
+	ent->ino = ikey->ino;
+	return &ent->node;
+}
+
+static bool ext2_inode_cache_flush(struct cache *c, struct cache_node *node)
+{
+	/* can always drop inode cache */
+	return 0;
+}
+
+static void ext2_inode_cache_relse(struct cache *c, struct cache_node *node)
+{
+	struct ext2_inode_cache_ent *ent = ICNODE(node);
+
+	free(ent);
+}
+
+static unsigned int ext2_inode_cache_bulkrelse(struct cache *cache,
+					       struct list_head *list)
+{
+	struct cache_node *cn, *n;
+	int count = 0;
+
+	if (list_empty(list))
+		return 0;
+
+	list_for_each_entry_safe(cn, n, list, cn_mru) {
+		ext2_inode_cache_relse(cache, cn);
+		count++;
+	}
+
+	return count;
+}
+
+static const struct cache_operations ext2_inode_cache_ops = {
+	.hash		= ext2_inode_cache_hash,
+	.alloc		= ext2_inode_cache_alloc,
+	.flush		= ext2_inode_cache_flush,
+	.relse		= ext2_inode_cache_relse,
+	.compare	= ext2_inode_cache_compare,
+	.bulkrelse	= ext2_inode_cache_bulkrelse,
+	.resize		= cache_gradual_resize,
+};
+
+static errcode_t ext2_inode_cache_iget(ext2_filsys fs, ext2_ino_t ino,
+				       unsigned int getflags,
+				       struct ext2_inode_cache_ent **entp)
+{
+	struct ext2_inode_cache_key ikey = {
+		.fs = fs,
+		.ino = ino,
+	};
+	struct cache_node *node = NULL;
+
+	cache_node_get(&fs->icache->cache, &ikey, getflags, &node);
+	if (!node)
+		return ENOMEM;
+
+	*entp = ICNODE(node);
+	return 0;
+}
+
+static void ext2_inode_cache_iput(ext2_filsys fs,
+				  struct ext2_inode_cache_ent *ent)
+{
+	cache_node_put(&fs->icache->cache, &ent->node);
+}
+
+static int ext2_inode_cache_ipurge(ext2_filsys fs, ext2_ino_t ino,
+				   struct ext2_inode_cache_ent *ent)
+{
+	struct ext2_inode_cache_key ikey = {
+		.fs = fs,
+		.ino = ino,
+	};
+
+	return cache_node_purge(&fs->icache->cache, &ikey, &ent->node);
+}
+
+static void ext2_inode_cache_ibump(ext2_filsys fs,
+				   struct ext2_inode_cache_ent *ent)
+{
+	if (++ent->access > 50) {
+		cache_node_bump_priority(&fs->icache->cache, &ent->node);
+		ent->access = 0;
+	}
+}
+
 /*
  * This routine flushes the icache, if it exists.
  */
 errcode_t ext2fs_flush_icache(ext2_filsys fs)
 {
-	unsigned	i;
-
 	if (!fs->icache)
 		return 0;
 
-	for (i=0; i < fs->icache->cache_size; i++)
-		fs->icache->cache[i].ino = 0;
+	cache_purge(&fs->icache->cache);
 
 	fs->icache->buffer_blk = 0;
 	return 0;
@@ -81,23 +208,20 @@ errcode_t ext2fs_flush_icache(ext2_filsys fs)
  */
 void ext2fs_free_inode_cache(struct ext2_inode_cache *icache)
 {
-	unsigned i;
-
 	if (--icache->refcount)
 		return;
 	if (icache->buffer)
 		ext2fs_free_mem(&icache->buffer);
-	for (i = 0; i < icache->cache_size; i++)
-		ext2fs_free_mem(&icache->cache[i].inode);
-	if (icache->cache)
-		ext2fs_free_mem(&icache->cache);
+	if (cache_initialized(&icache->cache)) {
+		cache_purge(&icache->cache);
+		cache_destroy(&icache->cache);
+	}
 	icache->buffer_blk = 0;
 	ext2fs_free_mem(&icache);
 }
 
 errcode_t ext2fs_create_inode_cache(ext2_filsys fs, unsigned int cache_size)
 {
-	unsigned	i;
 	errcode_t	retval;
 
 	if (fs->icache)
@@ -112,21 +236,11 @@ errcode_t ext2fs_create_inode_cache(ext2_filsys fs, unsigned int cache_size)
 		goto errout;
 
 	fs->icache->buffer_blk = 0;
-	fs->icache->cache_last = -1;
-	fs->icache->cache_size = cache_size;
 	fs->icache->refcount = 1;
-	retval = ext2fs_get_array(fs->icache->cache_size,
-				  sizeof(struct ext2_inode_cache_ent),
-				  &fs->icache->cache);
+	retval = cache_init(0, cache_size, &ext2_inode_cache_ops,
+			    &fs->icache->cache);
 	if (retval)
 		goto errout;
-
-	for (i = 0; i < fs->icache->cache_size; i++) {
-		retval = ext2fs_get_mem(EXT2_INODE_SIZE(fs->super),
-					&fs->icache->cache[i].inode);
-		if (retval)
-			goto errout;
-	}
 
 	ext2fs_flush_icache(fs);
 	return 0;
@@ -762,12 +876,12 @@ errcode_t ext2fs_read_inode2(ext2_filsys fs, ext2_ino_t ino,
 	unsigned long 	block, offset;
 	char 		*ptr;
 	errcode_t	retval;
-	unsigned	i;
 	int		clen, inodes_per_block;
 	io_channel	io;
 	int		length = EXT2_INODE_SIZE(fs->super);
 	struct ext2_inode_large	*iptr;
-	int		cache_slot, fail_csum;
+	struct ext2_inode_cache_ent *ent = NULL;
+	int		fail_csum;
 
 	EXT2_CHECK_MAGIC(fs, EXT2_ET_MAGIC_EXT2FS_FILSYS);
 
@@ -794,12 +908,12 @@ errcode_t ext2fs_read_inode2(ext2_filsys fs, ext2_ino_t ino,
 			return retval;
 	}
 	/* Check to see if it's in the inode cache */
-	for (i = 0; i < fs->icache->cache_size; i++) {
-		if (fs->icache->cache[i].ino == ino) {
-			memcpy(inode, fs->icache->cache[i].inode,
-			       (bufsize > length) ? length : bufsize);
-			return 0;
-		}
+	ext2_inode_cache_iget(fs, ino, CACHE_GET_INCORE, &ent);
+	if (ent) {
+		memcpy(inode, ent->raw, (bufsize > length) ? length : bufsize);
+		ext2_inode_cache_ibump(fs, ent);
+		ext2_inode_cache_iput(fs, ent);
+		return 0;
 	}
 	if (fs->flags & EXT2_FLAG_IMAGE_FILE) {
 		inodes_per_block = fs->blocksize / EXT2_INODE_SIZE(fs->super);
@@ -827,8 +941,10 @@ errcode_t ext2fs_read_inode2(ext2_filsys fs, ext2_ino_t ino,
 	}
 	offset &= (EXT2_BLOCK_SIZE(fs->super) - 1);
 
-	cache_slot = (fs->icache->cache_last + 1) % fs->icache->cache_size;
-	iptr = (struct ext2_inode_large *)fs->icache->cache[cache_slot].inode;
+	retval = ext2_inode_cache_iget(fs, ino, 0, &ent);
+	if (retval)
+		return retval;
+	iptr = (struct ext2_inode_large *)ent->raw;
 
 	ptr = (char *) iptr;
 	while (length) {
@@ -863,12 +979,14 @@ errcode_t ext2fs_read_inode2(ext2_filsys fs, ext2_ino_t ino,
 			       0, length);
 #endif
 
-	/* Update the inode cache bookkeeping */
-	if (!fail_csum) {
-		fs->icache->cache_last = cache_slot;
-		fs->icache->cache[cache_slot].ino = ino;
-	}
 	memcpy(inode, iptr, (bufsize > length) ? length : bufsize);
+
+	/* Update the inode cache bookkeeping */
+	if (!fail_csum)
+		ext2_inode_cache_ibump(fs, ent);
+	ext2_inode_cache_iput(fs, ent);
+	if (fail_csum)
+		ext2_inode_cache_ipurge(fs, ino, ent);
 
 	if (!(fs->flags & EXT2_FLAG_IGNORE_CSUM_ERRORS) &&
 	    !(flags & READ_INODE_NOCSUM) && fail_csum)
@@ -899,8 +1017,8 @@ errcode_t ext2fs_write_inode2(ext2_filsys fs, ext2_ino_t ino,
 	unsigned long block, offset;
 	errcode_t retval = 0;
 	struct ext2_inode_large *w_inode;
+	struct ext2_inode_cache_ent *ent;
 	char *ptr;
-	unsigned i;
 	int clen;
 	int length = EXT2_INODE_SIZE(fs->super);
 
@@ -933,19 +1051,20 @@ errcode_t ext2fs_write_inode2(ext2_filsys fs, ext2_ino_t ino,
 	}
 
 	/* Check to see if the inode cache needs to be updated */
-	if (fs->icache) {
-		for (i=0; i < fs->icache->cache_size; i++) {
-			if (fs->icache->cache[i].ino == ino) {
-				memcpy(fs->icache->cache[i].inode, inode,
-				       (bufsize > length) ? length : bufsize);
-				break;
-			}
-		}
-	} else {
+	if (!fs->icache) {
 		retval = ext2fs_create_inode_cache(fs, 4);
 		if (retval)
 			goto errout;
 	}
+
+	retval = ext2_inode_cache_iget(fs, ino, 0, &ent);
+	if (retval)
+		goto errout;
+
+	memcpy(ent->raw, inode, (bufsize > length) ? length : bufsize);
+	ext2_inode_cache_ibump(fs, ent);
+	ext2_inode_cache_iput(fs, ent);
+
 	memcpy(w_inode, inode, (bufsize > length) ? length : bufsize);
 
 	if (!(fs->flags & EXT2_FLAG_RW)) {
