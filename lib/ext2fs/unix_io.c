@@ -1538,6 +1538,7 @@ static errcode_t unix_write_byte(io_channel channel, unsigned long offset,
 {
 	struct unix_private_data *data;
 	errcode_t	retval = 0;
+	unsigned long long bno, nbno;
 	ssize_t		actual;
 
 	EXT2_CHECK_MAGIC(channel, EXT2_ET_MAGIC_IO_CHANNEL);
@@ -1553,10 +1554,17 @@ static errcode_t unix_write_byte(io_channel channel, unsigned long offset,
 
 #ifndef NO_IO_CACHE
 	/*
-	 * Flush out the cache completely
+	 * Flush all the dirty blocks, then invalidate the blocks we're about
+	 * to write.
 	 */
-	if ((retval = flush_cached_blocks(channel, data, FLUSH_INVALIDATE)))
+	retval = flush_cached_blocks(channel, data, 0);
+	if (retval)
 		return retval;
+
+	bno = offset / channel->block_size;
+	nbno = (offset + size + channel->block_size - 1) / channel->block_size;
+
+	invalidate_cached_blocks(channel, data, bno, nbno - bno);
 #endif
 
 	if (lseek(data->dev, offset + data->offset, SEEK_SET) < 0)
