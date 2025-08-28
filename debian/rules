@@ -189,6 +189,8 @@ endif
 ifeq ($(SKIP_FUSE2FS),)
 	dh_shlibdeps -pfuse2fs -l${stdbuilddir}/lib \
 		-- -Ldebian/e2fsprogs.shlibs.local
+	dh_shlibdeps -pfuse4fs -l${stdbuilddir}/lib \
+		-- -Ldebian/e2fsprogs.shlibs.local
 endif
 	dh_shlibdeps --remaining-packages -l${stdbuilddir}/lib
 

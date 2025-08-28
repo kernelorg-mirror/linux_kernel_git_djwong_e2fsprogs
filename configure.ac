@@ -1447,6 +1447,37 @@ elif test -n "$FUSE_LIB"
 then
 	FUSE_USE_VERSION=29
 fi
+
+FUSE4FS_CMT=
+if test "$FUSE_USE_VERSION" -ge 30
+then
+dnl
+dnl see if fuse3 supports lowlevel interface
+dnl
+AC_MSG_CHECKING(for lowlevel interface in libfuse)
+AC_LINK_IFELSE(
+[	AC_LANG_PROGRAM([[
+#define _GNU_SOURCE
+#define _FILE_OFFSET_BITS	64
+#define FUSE_USE_VERSION	30
+#include <fuse_lowlevel.h>
+	]], [[
+struct fuse_lowlevel_ops fs_ops = {
+	.init = NULL,
+	.destroy = NULL,
+};
+	]])
+], have_fuse_lowlevel=yes
+   AC_MSG_RESULT(yes),
+   AC_MSG_RESULT(no))
+if test "$have_fuse_lowlevel" = yes; then
+  AC_DEFINE(HAVE_FUSE_LOWLEVEL, 1, [Define to 1 if fuse supports lowlevel API])
+else
+  FUSE4FS_CMT="#"
+fi
+fi
+AC_SUBST(FUSE4_CMT)
+
 if test -n "$FUSE_USE_VERSION"
 then
 	AC_DEFINE_UNQUOTED(FUSE_USE_VERSION, $FUSE_USE_VERSION,
@@ -2060,7 +2091,7 @@ for i in MCONFIG Makefile \
 	misc/Makefile ext2ed/Makefile e2fsck/Makefile \
 	debugfs/Makefile tests/Makefile tests/progs/Makefile \
 	tests/fuzz/Makefile resize/Makefile doc/Makefile \
-	po/Makefile.in scrub/Makefile; do
+	po/Makefile.in scrub/Makefile fuse4fs/Makefile; do
 	if test -d `dirname ${srcdir}/$i` ; then
 		outlist="$outlist $i"
 	fi

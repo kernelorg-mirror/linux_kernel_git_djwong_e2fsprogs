@@ -21,6 +21,16 @@ Description: ext2 / ext3 / ext4 file system driver for FUSE
  writing from devices or image files containing ext2, ext3, and ext4
  file systems.
 
+Package: fuse4fs
+Build-Profiles: <!pkg.e2fsprogs.no-fuse2fs>
+Priority: optional
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Architecture: linux-any kfreebsd-any
+Description: ext2 / ext3 / ext4 file system driver for FUSE
+ fuse4fs is a faster FUSE file system client that supports reading and
+ writing from devices or image files containing ext2, ext3, and ext4
+ file systems.
+
 Package: fuseext2
 Build-Profiles: <!pkg.e2fsprogs.no-fuse2fs>
 Depends: fuse2fs (>= 1.47.1-2), ${misc:Depends}
