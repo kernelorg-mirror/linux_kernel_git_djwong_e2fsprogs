@@ -1041,6 +1041,23 @@ static void fuse2fs_release_lockfile(struct fuse2fs *ff)
 	free(ff->lockfile);
 }
 
+static void fuse2fs_unmount(struct fuse2fs *ff)
+{
+	errcode_t err;
+
+	if (ff->fs) {
+		fuse2fs_mmp_stop(ff);
+
+		err = ext2fs_close_free(&ff->fs);
+		if (err)
+			err_printf(ff, "%s: %s\n", _("while closing fs"),
+				   error_message(err));
+	}
+
+	if (ff->lockfile)
+		fuse2fs_release_lockfile(ff);
+}
+
 static void op_destroy(void *p EXT2FS_ATTR((unused)))
 {
 	struct fuse2fs *ff = fuse2fs_get();
@@ -5437,15 +5454,7 @@ out:
  _("Mount failed while opening filesystem.  Check dmesg(1) for details."));
 		fflush(orig_stderr);
 	}
-	if (fctx.fs) {
-		fuse2fs_mmp_stop(&fctx);
-
-		err = ext2fs_close_free(&fctx.fs);
-		if (err)
-			com_err(argv[0], err, "while closing fs");
-	}
-	if (fctx.lockfile)
-		fuse2fs_release_lockfile(&fctx);
+	fuse2fs_unmount(&fctx);
 	if (fctx.device)
 		free(fctx.device);
 	fuse_opt_free_args(&args);
