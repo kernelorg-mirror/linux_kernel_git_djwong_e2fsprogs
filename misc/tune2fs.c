@@ -2857,10 +2857,6 @@ err_out:
 }
 
 
-#define list_for_each_safe(pos, pnext, head) \
-	for (pos = (head)->next, pnext = pos->next; pos != (head); \
-	     pos = pnext, pnext = pos->next)
-
 static void free_blk_move_list(void)
 {
 	struct list_head *entry, *tmp;
