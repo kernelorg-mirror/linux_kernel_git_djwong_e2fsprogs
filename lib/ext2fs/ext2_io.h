@@ -103,7 +103,8 @@ struct struct_io_manager {
 	errcode_t (*zeroout)(io_channel channel, unsigned long long block,
 			     unsigned long long count);
 	errcode_t (*flock)(io_channel channel, unsigned int flock_flags);
-	long	reserved[13];
+	errcode_t (*get_fd)(io_channel channel, int *fd);
+	long	reserved[12];
 };
 
 #define IO_FLAG_RW		0x0001
@@ -155,6 +156,7 @@ extern errcode_t io_channel_cache_readahead(io_channel io,
 					    unsigned long long count);
 extern errcode_t io_channel_flock(io_channel io, unsigned int flock_flags);
 extern errcode_t io_channel_funlock(io_channel io);
+extern errcode_t io_channel_get_fd(io_channel io, int *fd);
 
 #ifdef _WIN32
 /* windows_io.c */
