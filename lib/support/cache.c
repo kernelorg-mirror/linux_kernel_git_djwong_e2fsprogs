@@ -12,6 +12,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <errno.h>
 
 #include "list.h"
 #include "cache.h"
@@ -33,23 +34,18 @@
 
 static unsigned int cache_generic_bulkrelse(struct cache *, struct list_head *);
 
-struct cache *
+int
 cache_init(
 	int			flags,
 	unsigned int		hashsize,
-	const struct cache_operations	*cache_operations)
+	const struct cache_operations	*cache_operations,
+	struct cache		*cache)
 {
-	struct cache *		cache;
 	unsigned int		i, maxcount;
 
 	maxcount = hashsize * HASH_CACHE_RATIO;
 
-	if (!(cache = malloc(sizeof(struct cache))))
-		return NULL;
-	if (!(cache->c_hash = calloc(hashsize, sizeof(struct cache_hash)))) {
-		free(cache);
-		return NULL;
-	}
+	memset(cache, 0, sizeof(*cache));
 
 	cache->c_flags = flags;
 	cache->c_count = 0;
@@ -57,8 +53,6 @@ cache_init(
 	cache->c_hits = 0;
 	cache->c_misses = 0;
 	cache->c_maxcount = maxcount;
-	cache->c_hashsize = hashsize;
-	cache->c_hashshift = fls(hashsize) - 1;
 	cache->hash = cache_operations->hash;
 	cache->alloc = cache_operations->alloc;
 	cache->flush = cache_operations->flush;
@@ -70,18 +64,26 @@ cache_init(
 	cache->put = cache_operations->put;
 	pthread_mutex_init(&cache->c_mutex, NULL);
 
+	for (i = 0; i <= CACHE_DIRTY_PRIORITY; i++) {
+		list_head_init(&cache->c_mrus[i].cm_list);
+		cache->c_mrus[i].cm_count = 0;
+		pthread_mutex_init(&cache->c_mrus[i].cm_mutex, NULL);
+	}
+
+	cache->c_hash = calloc(hashsize, sizeof(struct cache_hash));
+	if (!cache->c_hash)
+		return ENOMEM;
+
+	cache->c_hashsize = hashsize;
+	cache->c_hashshift = fls(hashsize) - 1;
+
 	for (i = 0; i < hashsize; i++) {
 		list_head_init(&cache->c_hash[i].ch_list);
 		cache->c_hash[i].ch_count = 0;
 		pthread_mutex_init(&cache->c_hash[i].ch_mutex, NULL);
 	}
 
-	for (i = 0; i <= CACHE_DIRTY_PRIORITY; i++) {
-		list_head_init(&cache->c_mrus[i].cm_list);
-		cache->c_mrus[i].cm_count = 0;
-		pthread_mutex_init(&cache->c_mrus[i].cm_mutex, NULL);
-	}
-	return cache;
+	return 0;
 }
 
 static void
@@ -153,7 +155,7 @@ cache_destroy(
 	}
 	pthread_mutex_destroy(&cache->c_mutex);
 	free(cache->c_hash);
-	free(cache);
+	memset(cache, 0, sizeof(*cache));
 }
 
 static unsigned int
