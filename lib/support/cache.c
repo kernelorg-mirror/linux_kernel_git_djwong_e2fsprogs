@@ -631,18 +631,19 @@ cache_purge(
 }
 
 /*
- * Flush all nodes in the cache to disk.
+ * Flush all nodes in the cache to disk.  Returns true if the flush succeeded.
  */
-void
+bool
 cache_flush(
 	struct cache		*cache)
 {
 	struct cache_hash	*hash;
 	struct cache_node	*node;
 	int			i;
+	bool			still_dirty = false;
 
 	if (!cache->flush)
-		return;
+		return true;
 
 	for (i = 0; i < cache->c_hashsize; i++) {
 		hash = &cache->c_hash[i];
@@ -650,11 +651,13 @@ cache_flush(
 		pthread_mutex_lock(&hash->ch_mutex);
 		list_for_each_entry(node, &hash->ch_list, cn_hash) {
 			pthread_mutex_lock(&node->cn_mutex);
-			cache->flush(cache, node);
+			still_dirty |= cache->flush(cache, node);
 			pthread_mutex_unlock(&node->cn_mutex);
 		}
 		pthread_mutex_unlock(&hash->ch_mutex);
 	}
+
+	return !still_dirty;
 }
 
 #define	HASH_REPORT	(3 * HASH_CACHE_RATIO)
