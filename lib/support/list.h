@@ -17,6 +17,13 @@ struct list_head {
 	((type *)((char *)(ptr) - offsetof(type, member)))
 #endif
 
+static inline void list_head_destroy(struct list_head *list)
+{
+	list->next = list->prev = NULL;
+}
+
+#define list_head_init(list) INIT_LIST_HEAD(list)
+
 /*
  * Circular doubly linked list implementation.
  *
