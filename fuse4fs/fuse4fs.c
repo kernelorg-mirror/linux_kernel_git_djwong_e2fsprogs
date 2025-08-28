@@ -6284,7 +6284,38 @@ static void op_shutdownfs(fuse_req_t req, fuse_ino_t ino, uint64_t flags)
 	int ret;
 
 	ret = ioctl_shutdown(ff, ctxt, NULL, NULL, 0);
+	fuse_reply_err(req, -ret);
+}
 
+static void op_syncfs(fuse_req_t req, fuse_ino_t ino)
+{
+	struct fuse4fs *ff = fuse4fs_get(req);
+	ext2_filsys fs;
+	errcode_t err;
+	int ret = 0;
+
+	FUSE4FS_CHECK_CONTEXT(req);
+	fs = fuse4fs_start(ff);
+
+	if (ff->opstate == F4OP_WRITABLE) {
+		if (fs->super->s_error_count)
+			fs->super->s_state |= EXT2_ERROR_FS;
+		ext2fs_mark_super_dirty(fs);
+		err = ext2fs_set_gdt_csum(fs);
+		if (err) {
+			ret = translate_error(fs, 0, err);
+			goto out_unlock;
+		}
+
+		err = ext2fs_flush2(fs, 0);
+		if (err) {
+			ret = translate_error(fs, 0, err);
+			goto out_unlock;
+		}
+	}
+
+out_unlock:
+	fuse4fs_finish(ff, ret);
 	fuse_reply_err(req, -ret);
 }
 #endif
@@ -7588,6 +7619,7 @@ static struct fuse_lowlevel_ops fs_ops = {
 	.freezefs = op_freezefs,
 	.unfreezefs = op_unfreezefs,
 	.shutdownfs = op_shutdownfs,
+	.syncfs = op_syncfs,
 #endif
 #ifdef HAVE_FUSE_IOMAP
 	.iomap_begin = op_iomap_begin,
