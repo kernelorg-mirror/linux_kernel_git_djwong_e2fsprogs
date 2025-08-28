@@ -5853,6 +5853,28 @@ static int fuse2fs_iomap_begin_write(struct fuse2fs *ff, ext2_ino_t ino,
 	return 0;
 }
 
+static inline int fuse2fs_should_cache_iomap(struct fuse2fs *ff,
+					     uint32_t opflags,
+					     const struct fuse_file_iomap *map)
+{
+	if (!ff->iomap_cache)
+		return 0;
+
+	/*
+	 * Don't cache small unwritten extents that are being written to the
+	 * device because the overhead of keeping the cache updated will tank
+	 * performance.
+	 */
+	if ((opflags & (FUSE_IOMAP_OP_WRITE | FUSE_IOMAP_OP_DIRECT)) == 0)
+		return 1;
+	if (map->type != FUSE_IOMAP_TYPE_UNWRITTEN)
+		return 1;
+	if (map->length >= FUSE2FS_FSB_TO_B(ff, 16))
+		return 1;
+
+	return 0;
+}
+
 static int op_iomap_begin(const char *path, uint64_t nodeid, uint64_t attr_ino,
 			  off_t pos, uint64_t count, uint32_t opflags,
 			  struct fuse_file_iomap *read,
@@ -5925,7 +5947,7 @@ static int op_iomap_begin(const char *path, uint64_t nodeid, uint64_t attr_ino,
 	 * Cache the mapping in the kernel so that we can reuse them for
 	 * subsequent IO.
 	 */
-	if (ff->iomap_cache) {
+	if (fuse2fs_should_cache_iomap(ff, opflags, read)) {
 		ret = fuse_fs_iomap_upsert(nodeid, attr_ino, read, NULL);
 		if (ret) {
 			ret = translate_error(fs, attr_ino, -ret);
