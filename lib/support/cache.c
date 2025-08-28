@@ -403,6 +403,7 @@ int
 cache_node_get(
 	struct cache		*cache,
 	cache_key_t		key,
+	unsigned int		cgflags,
 	struct cache_node	**nodep)
 {
 	struct cache_hash	*hash;
@@ -456,6 +457,12 @@ next_object:
 			continue;	/* what the hell, gcc? */
 		}
 		pthread_mutex_unlock(&hash->ch_mutex);
+
+		if (cgflags & CACHE_GET_INCORE) {
+			*nodep = NULL;
+			return 0;
+		}
+
 		/*
 		 * not found, allocate a new entry
 		 */
