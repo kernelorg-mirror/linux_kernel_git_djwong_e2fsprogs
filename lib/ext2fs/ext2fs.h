@@ -220,6 +220,7 @@ typedef struct ext2_file *ext2_file_t;
 #define EXT2_FLAG_IBITMAP_TAIL_PROBLEM	0x2000000
 #define EXT2_FLAG_THREADS		0x4000000
 #define EXT2_FLAG_IGNORE_SWAP_DIRENT	0x8000000
+#define EXT2_FLAG_WRITE_FULL_SUPER	0x10000000
 
 /*
  * Internal flags for use by the ext2fs library only
