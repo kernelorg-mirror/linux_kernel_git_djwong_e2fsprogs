@@ -1213,10 +1213,16 @@ static errcode_t unix_close(io_channel channel)
 #ifndef NO_IO_CACHE
 	retval = flush_cached_blocks(channel, data, 0);
 #endif
+#ifdef HAVE_FSYNC
+	/* always fsync the device, even if flushing our own cache failed */
+	if (fsync(data->dev) != 0 && !retval)
+		retval = errno;
+#endif
 
 	unix_funlock(channel);
 
-	if (channel->manager != unixfd_io_manager && close(data->dev) < 0)
+	if (channel->manager != unixfd_io_manager && close(data->dev) < 0 &&
+	    !retval)
 		retval = errno;
 	free_cache(data);
 	free(data->cache);
