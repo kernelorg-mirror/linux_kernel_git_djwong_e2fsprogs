@@ -166,3 +166,11 @@ errcode_t io_channel_funlock(io_channel io)
 
 	return io->manager->flock(io, 0);
 }
+
+errcode_t io_channel_get_fd(io_channel io, int *fd)
+{
+	if (!io->manager->get_fd)
+		return EXT2_ET_OP_NOT_SUPPORTED;
+
+	return io->manager->get_fd(io, fd);
+}
