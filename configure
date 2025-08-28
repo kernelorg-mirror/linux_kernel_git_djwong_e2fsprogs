@@ -15115,14 +15115,14 @@ fi
 
 if test "$FUSE_LIB" = "-lfuse3"
 then
-	FUSE_USE_VERSION=35
+	FUSE_USE_VERSION=314
 	CFLAGS="$fuse3_CFLAGS $CFLAGS"
 	FUSE_LIB="$fuse3_LIBS"
 	       for ac_header in pthread.h fuse.h
 do :
   as_ac_Header=`printf "%s\n" "ac_cv_header_$ac_header" | sed "$as_sed_sh"`
 ac_fn_c_check_header_compile "$LINENO" "$ac_header" "$as_ac_Header" "#define _FILE_OFFSET_BITS	64
-#define FUSE_USE_VERSION 35
+#define FUSE_USE_VERSION 314
 #ifdef __linux__
 #include <linux/fs.h>
 #include <linux/falloc.h>
