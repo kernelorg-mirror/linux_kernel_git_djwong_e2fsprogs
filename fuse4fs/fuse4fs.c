@@ -357,10 +357,20 @@ static inline int u_log2(unsigned int arg)
 	return l;
 }
 
+/* inode is not on unlinked list */
+#define FUSE4FS_NULL_INO	((ext2_ino_t)~0ULL)
+
 struct fuse4fs_inode {
 	struct cache_node	i_cnode;
 	ext2_ino_t		i_ino;
 	unsigned int		i_open_count;
+
+	/*
+	 * FUSE4FS_NULL_INO: inode is not on the orphan list
+	 * 0: inode is the first on the orphan list
+	 * otherwise: inode is in the middle of the list
+	 */
+	ext2_ino_t		i_prev_orphan;
 };
 
 struct fuse4fs_ikey {
@@ -402,12 +412,15 @@ static struct cache_node *icache_alloc(struct cache *c, cache_key_t key)
 		return NULL;
 
 	fi->i_ino = ikey->i_ino;
+	fi->i_prev_orphan = FUSE4FS_NULL_INO;
 	return &fi->i_cnode;
 }
 
 static bool icache_flush(struct cache *c, struct cache_node *node)
 {
-	return false;
+	struct fuse4fs_inode *fi = ICNODE(node);
+
+	return fi->i_prev_orphan != FUSE4FS_NULL_INO;
 }
 
 static void icache_relse(struct cache *c, struct cache_node *node)
@@ -2309,9 +2322,30 @@ static int fuse4fs_add_to_orphans(struct fuse4fs *ff, ext2_ino_t ino,
 				  struct ext2_inode_large *inode)
 {
 	ext2_filsys fs = ff->fs;
+	struct fuse4fs_inode *fi;
+	ext2_ino_t orphan_ino = fs->super->s_last_orphan;
+	errcode_t err;
 
 	dbg_printf(ff, "%s: orphan ino=%d dtime=%d next=%d\n",
 		   __func__, ino, inode->i_dtime, fs->super->s_last_orphan);
+
+	/* Make the first orphan on the list point back to us */
+	if (orphan_ino != 0) {
+		err = fuse4fs_iget(ff, orphan_ino, &fi);
+		if (err)
+			return translate_error(fs, orphan_ino, err);
+
+		fi->i_prev_orphan = ino;
+		fuse4fs_iput(ff, fi);
+	}
+
+	/* Add ourselves to the head of the orphan list */
+	err = fuse4fs_iget(ff, ino, &fi);
+	if (err)
+		return translate_error(fs, ino, err);
+
+	fi->i_prev_orphan = 0;
+	fuse4fs_iput(ff, fi);
 
 	inode->i_dtime = fs->super->s_last_orphan;
 	fs->super->s_last_orphan = ino;
@@ -2320,24 +2354,158 @@ static int fuse4fs_add_to_orphans(struct fuse4fs *ff, ext2_ino_t ino,
 	return 0;
 }
 
+/*
+ * Given the orphan list excerpt: prev_orphan -> ino -> next_orphan, set
+ * next_orphan's backpointer to ino's backpointer (prev_orphan), having removed
+ * ino from the orphan list.
+ */
+static int fuse4fs_update_next_orphan_backlink(struct fuse4fs *ff,
+					       ext2_ino_t prev_orphan,
+					       ext2_ino_t ino,
+					       ext2_ino_t next_orphan)
+{
+	struct fuse4fs_inode *fi;
+	errcode_t err;
+	int ret = 0;
+
+	err = fuse4fs_iget(ff, next_orphan, &fi);
+	if (err)
+		return translate_error(ff->fs, next_orphan, err);
+
+	dbg_printf(ff, "%s: ino=%d cached next=%d nextprev=%d prev=%d\n",
+		   __func__, ino, next_orphan, fi->i_prev_orphan,
+		   prev_orphan);
+
+	if (fi->i_prev_orphan != ino) {
+		ret = translate_error(ff->fs, next_orphan,
+				      EXT2_ET_FILESYSTEM_CORRUPTED);
+		goto out_iput;
+	}
+
+	fi->i_prev_orphan = prev_orphan;
+out_iput:
+	fuse4fs_iput(ff, fi);
+	return ret;
+}
+
+/*
+ * Remove ino from the orphan list the fast way.  Returns 1 for success, 0 if
+ * it didn't do anything, or a negative errno.
+ */
+static int fuse4fs_fast_remove_from_orphans(struct fuse4fs *ff, ext2_ino_t ino,
+					    struct ext2_inode_large *inode)
+{
+	struct ext2_inode_large orphan;
+	ext2_filsys fs = ff->fs;
+	struct fuse4fs_inode *fi;
+	ext2_ino_t prev_orphan;
+	ext2_ino_t next_orphan = 0;
+	errcode_t err;
+	int ret = 0;
+
+	err = fuse4fs_iget(ff, ino, &fi);
+	if (err)
+		return translate_error(fs, ino, err);
+
+	prev_orphan = fi->i_prev_orphan;
+	switch (prev_orphan) {
+	case 0:
+		/* First inode in the list */
+		dbg_printf(ff, "%s: ino=%d cached superblock\n", __func__, ino);
+
+		fs->super->s_last_orphan = inode->i_dtime;
+		next_orphan = inode->i_dtime;
+		inode->i_dtime = 0;
+		ext2fs_mark_super_dirty(fs);
+		fi->i_prev_orphan = FUSE4FS_NULL_INO;
+		break;
+	case FUSE4FS_NULL_INO:
+		/* unknown */
+		dbg_printf(ff, "%s: ino=%d broken list??\n", __func__, ino);
+		ret = 0;
+		goto out_iput;
+	default:
+		/* We're in the middle of the list */
+		err = fuse4fs_read_inode(fs, prev_orphan, &orphan);
+		if (err) {
+			ret = translate_error(fs, prev_orphan, err);
+			goto out_iput;
+		}
+
+		dbg_printf(ff,
+ "%s: ino=%d cached prev=%d prevnext=%d next=%d\n",
+			   __func__, ino, prev_orphan, orphan.i_dtime,
+			   inode->i_dtime);
+
+		if (orphan.i_dtime != ino) {
+			ret = translate_error(fs, prev_orphan,
+					      EXT2_ET_FILESYSTEM_CORRUPTED);
+			goto out_iput;
+		}
+
+		fi->i_prev_orphan = FUSE4FS_NULL_INO;
+		orphan.i_dtime = inode->i_dtime;
+		next_orphan = inode->i_dtime;
+		inode->i_dtime = 0;
+
+		err = fuse4fs_write_inode(fs, prev_orphan, &orphan);
+		if (err) {
+			ret = translate_error(fs, prev_orphan, err);
+			goto out_iput;
+		}
+
+		break;
+	}
+
+	/*
+	 * Make the next orphaned inode point back to the our own previous list
+	 * entry
+	 */
+	if (next_orphan != 0) {
+		ret = fuse4fs_update_next_orphan_backlink(ff, prev_orphan, ino,
+							  next_orphan);
+		if (ret)
+			goto out_iput;
+	}
+	ret = 1;
+
+out_iput:
+	fuse4fs_iput(ff, fi);
+	return ret;
+}
+
 static int fuse4fs_remove_from_orphans(struct fuse4fs *ff, ext2_ino_t ino,
 				       struct ext2_inode_large *inode)
 {
 	ext2_filsys fs = ff->fs;
 	ext2_ino_t prev_orphan;
+	ext2_ino_t next_orphan;
 	errcode_t err;
+	int ret;
 
 	dbg_printf(ff, "%s: super=%d ino=%d next=%d\n",
 		   __func__, fs->super->s_last_orphan, ino, inode->i_dtime);
 
-	/* If we're lucky, the ondisk superblock points to us */
+	/*
+	 * Fast way: use the incore list, which doesn't include any orphans
+	 * that were already on the superblock when we mounted.
+	 */
+	ret = fuse4fs_fast_remove_from_orphans(ff, ino, inode);
+	if (ret < 0)
+		return ret;
+	if (ret == 1)
+		return 0;
+
+	/* Slow way: If we're lucky, the ondisk superblock points to us */
 	if (fs->super->s_last_orphan == ino) {
 		dbg_printf(ff, "%s: superblock\n", __func__);
 
+		next_orphan = inode->i_dtime;
 		fs->super->s_last_orphan = inode->i_dtime;
 		inode->i_dtime = 0;
 		ext2fs_mark_super_dirty(fs);
-		return 0;
+		return fuse4fs_update_next_orphan_backlink(ff, 0, ino,
+							   next_orphan);
 	}
 
 	/* Otherwise walk the ondisk orphan list. */
@@ -2357,6 +2525,7 @@ static int fuse4fs_remove_from_orphans(struct fuse4fs *ff, ext2_ino_t ino,
 			dbg_printf(ff, "%s: prev=%d\n",
 				   __func__, prev_orphan);
 
+			next_orphan = inode->i_dtime;
 			orphan.i_dtime = inode->i_dtime;
 			inode->i_dtime = 0;
 
@@ -2364,7 +2533,8 @@ static int fuse4fs_remove_from_orphans(struct fuse4fs *ff, ext2_ino_t ino,
 			if (err)
 				return translate_error(fs, prev_orphan, err);
 
-			return 0;
+			return fuse4fs_update_next_orphan_backlink(ff,
+					prev_orphan, ino, next_orphan);
 		}
 
 		dbg_printf(ff, "%s: orphan=%d next=%d\n",
