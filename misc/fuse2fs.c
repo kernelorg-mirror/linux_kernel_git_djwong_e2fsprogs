@@ -24,6 +24,7 @@
 #include <sys/ioctl.h>
 #include <unistd.h>
 #include <ctype.h>
+#include <stdbool.h>
 #define FUSE_DARWIN_ENABLE_EXTENSIONS 0
 #ifdef __SET_FOB_FOR_FUSE
 # error Do not set magic value __SET_FOB_FOR_FUSE!!!!
@@ -236,6 +237,8 @@ struct fuse2fs {
 	int directio;
 	int acl;
 	int dirsync;
+	int unmount_in_destroy;
+	int noblkdev;
 
 	int logfd;
 	int blocklog;
@@ -967,6 +970,11 @@ static errcode_t fuse2fs_open(struct fuse2fs *ff, int libext2_flags)
 	return 0;
 }
 
+static inline bool fuse2fs_on_bdev(const struct fuse2fs *ff)
+{
+	return ff->fs->io->flags & CHANNEL_FLAGS_BLOCK_DEVICE;
+}
+
 static errcode_t fuse2fs_config_cache(struct fuse2fs *ff)
 {
 	char buf[128];
@@ -1151,6 +1159,9 @@ static void op_destroy(void *p EXT2FS_ATTR((unused)))
 		uuid_unparse(fs->super->s_uuid, uuid);
 		log_printf(ff, "%s %s.\n", _("unmounting filesystem"), uuid);
 	}
+
+	if (ff->unmount_in_destroy)
+		fuse2fs_unmount(ff);
 
 	fuse2fs_finish(ff, 0);
 }
@@ -4998,6 +5009,7 @@ static struct fuse_opt fuse2fs_opts[] = {
 #ifdef HAVE_CLOCK_MONOTONIC
 	FUSE2FS_OPT("timing",		timing,			1),
 #endif
+	FUSE2FS_OPT("noblkdev",		noblkdev,		1),
 
 	FUSE_OPT_KEY("user_xattr",	FUSE2FS_IGNORED),
 	FUSE_OPT_KEY("noblock_validity", FUSE2FS_IGNORED),
@@ -5143,6 +5155,18 @@ static unsigned long long default_cache_size(void)
 	return ret;
 }
 
+static inline bool fuse2fs_want_fuseblk(const struct fuse2fs *ff)
+{
+	if (ff->noblkdev)
+		return false;
+
+	/* libfuse won't let non-root do fuseblk mounts */
+	if (getuid() != 0)
+		return false;
+
+	return fuse2fs_on_bdev(ff);
+}
+
 int main(int argc, char *argv[])
 {
 	struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
@@ -5199,6 +5223,28 @@ int main(int argc, char *argv[])
 	if (err) {
 		ret = 32;
 		goto out;
+	}
+
+	if (fuse2fs_want_fuseblk(&fctx)) {
+		/*
+		 * If this is a block device, we want to close the fs, reopen
+		 * the block device in non-exclusive mode, and start the fuse
+		 * driver in fuseblk mode (which will reopen the block device
+		 * in exclusive mode) so that unmount will wait until
+		 * op_destroy completes.
+		 */
+		fuse2fs_unmount(&fctx);
+		err = fuse2fs_open(&fctx, 0);
+		if (err) {
+			ret = 32;
+			goto out;
+		}
+
+		/* "blkdev" is the magic mount option for fuseblk mode */
+		snprintf(extra_args, BUFSIZ, "-oblkdev,blksize=%u",
+			 fctx.fs->blocksize);
+		fuse_opt_add_arg(&args, extra_args);
+		fctx.unmount_in_destroy = 1;
 	}
 
 	if (!fctx.cache_size)
