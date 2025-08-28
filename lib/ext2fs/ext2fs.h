@@ -178,6 +178,9 @@ typedef struct ext2_struct_dblist *ext2_dblist;
 #define EXT2_FILE_WRITE		0x0001
 #define EXT2_FILE_CREATE	0x0002
 
+/* no file I/O to disk blocks, only to inline data */
+#define EXT2_FILE_NOBLOCKIO	0x0004
+
 #define EXT2_FILE_MASK		0x00FF
 
 #define EXT2_FILE_BUF_DIRTY	0x4000
