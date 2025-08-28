@@ -42,6 +42,10 @@
 # define _FILE_OFFSET_BITS 64
 #endif /* _FILE_OFFSET_BITS */
 #include <fuse_lowlevel.h>
+#ifdef HAVE_FUSE4FS_SERVICE
+# include <sys/mount.h>
+# include <fuse_service.h>
+#endif
 #ifdef __SET_FOB_FOR_FUSE
 # undef _FILE_OFFSET_BITS
 #endif /* __SET_FOB_FOR_FUSE */
@@ -139,6 +143,10 @@
 #endif
 
 #define FUSE4FS_ATTR_TIMEOUT	(0.0)
+
+#ifndef O_DIRECT
+# define O_DIRECT	(0)
+#endif
 
 static inline uint64_t round_up(uint64_t b, unsigned int align)
 {
@@ -285,7 +293,20 @@ struct fuse4fs {
 #endif
 	struct fuse_session *fuse;
 	struct cache inodes;
+#ifdef HAVE_FUSE4FS_SERVICE
+	struct fuse_service *service;
+	int bdev_fd;
+#endif
 };
+
+#ifdef HAVE_FUSE4FS_SERVICE
+static inline bool fuse4fs_is_service(const struct fuse4fs *ff)
+{
+	return fuse_service_accepted(ff->service);
+}
+#else
+# define fuse4fs_is_service(...)		(false)
+#endif
 
 #define FUSE4FS_CHECK_HANDLE(req, fh) \
 	do { \
@@ -1270,6 +1291,105 @@ static errcode_t fuse4fs_check_support(struct fuse4fs *ff)
 	return 0;
 }
 
+#ifdef HAVE_FUSE4FS_SERVICE
+static int fuse4fs_service_connect(struct fuse4fs *ff, struct fuse_args *args)
+{
+	int ret;
+
+	ret = fuse_service_accept(&ff->service);
+	if (ret)
+		return ret;
+
+	if (!fuse4fs_is_service(ff))
+		return 0;
+
+	return fuse_service_append_args(ff->service, args);
+}
+
+static bool fuse4fs_service_should_drop_kernel_mode(const struct fuse4fs *ff)
+{
+	return ff->kernel && fuse4fs_is_service(ff) &&
+	       !fuse_service_can_allow_other(ff->service);
+}
+
+static void fuse4fs_service_close_bdev(struct fuse4fs *ff)
+{
+	if (ff->bdev_fd >= 0)
+		close(ff->bdev_fd);
+	ff->bdev_fd = -1;
+}
+
+static int fuse4fs_service_exit(struct fuse4fs *ff, int exitcode)
+{
+	if (!fuse4fs_is_service(ff))
+		return exitcode;
+
+	fuse_service_send_goodbye(ff->service, exitcode);
+	fuse_service_release(ff->service);
+	close(ff->bdev_fd);
+	ff->bdev_fd = -1;
+
+	return fuse_service_exit(exitcode);
+}
+
+static int fuse4fs_service_get_config(struct fuse4fs *ff)
+{
+	double deadline = init_deadline(FUSE4FS_OPEN_TIMEOUT);
+	const int open_flags = O_EXCL | (ff->directio ? O_DIRECT : 0);
+	int open_mode = O_RDWR;
+	int fd;
+	int ret;
+
+	do {
+		ret = fuse_service_request_file(ff->service, ff->device,
+						open_mode | open_flags, 0, 0);
+		if (ret)
+			return ret;
+
+		ret = fuse_service_receive_file(ff->service, ff->device, &fd);
+		if (ret)
+			return ret;
+
+		if ((fd == -EPERM || fd == -EACCES || fd == -EROFS) &&
+		    open_mode == O_RDWR) {
+			/* Try readonly, but force the loop to run once more */
+			open_mode = O_RDONLY;
+			ret = 1;
+		}
+	} while (ret == 1 || (fd == -EBUSY && retry_before_deadline(deadline)));
+
+	if (fd < 0) {
+		err_printf(ff, "%s %s: %s.\n", _("opening device"), ff->device,
+			   strerror(-fd));
+		return -1;
+	}
+
+	if (!ff->ro && open_mode == O_RDONLY)
+		ff->ro = 1;
+
+	ff->bdev_fd = fd;
+
+	return fuse_service_finish_file_requests(ff->service);
+}
+
+static errcode_t fuse4fs_service_openfs(struct fuse4fs *ff, char *options,
+					int flags)
+{
+	char path[64];
+
+	snprintf(path, sizeof(path), "/dev/fd/%d", ff->bdev_fd);
+	return ext2fs_open2(path, options, flags, 0, 0, unixfd_io_manager,
+			    &ff->fs);
+}
+#else
+# define fuse4fs_service_connect(...)		(0)
+# define fuse4fs_service_should_drop_kernel_mode(...)	(false)
+# define fuse4fs_service_close_bdev(...)	((void)0)
+# define fuse4fs_service_exit(fctx, ret)	(ret)
+# define fuse4fs_service_get_config(...)	(EOPNOTSUPP)
+# define fuse4fs_service_openfs(...)		(EOPNOTSUPP)
+#endif
+
 static errcode_t fuse4fs_acquire_lockfile(struct fuse4fs *ff)
 {
 	char *resolved;
@@ -1340,6 +1460,8 @@ static void fuse4fs_unmount(struct fuse4fs *ff)
 				   uuid);
 	}
 
+	fuse4fs_service_close_bdev(ff);
+
 	if (ff->lockfile)
 		fuse4fs_release_lockfile(ff);
 }
@@ -1395,8 +1517,11 @@ static errcode_t fuse4fs_open(struct fuse4fs *ff)
 	 */
 	deadline = init_deadline(FUSE4FS_OPEN_TIMEOUT);
 	do {
-		err = ext2fs_open2(ff->device, options, flags, 0, 0,
-				   unix_io_manager, &ff->fs);
+		if (fuse4fs_is_service(ff))
+			err = fuse4fs_service_openfs(ff, options, flags);
+		else
+			err = ext2fs_open2(ff->device, options, flags, 0, 0,
+					   unix_io_manager, &ff->fs);
 		if ((err == EPERM || err == EACCES) &&
 		    (!ff->ro || (flags & EXT2_FLAG_RW))) {
 			/*
@@ -1740,6 +1865,10 @@ static int fuse4fs_setup_logging(struct fuse4fs *ff)
 	char *logfile = getenv("FUSE4FS_LOGFILE");
 	if (logfile)
 		return fuse4fs_capture_output(ff, logfile);
+
+	/* systemd already hooked us up to /dev/ttyprintk */
+	if (fuse4fs_is_service(ff))
+		return 0;
 
 	/* in kernel mode, try to log errors to the kernel log */
 	if (ff->kernel)
@@ -5962,14 +6091,13 @@ out_default:
 }
 
 static void fuse4fs_compute_libfuse_args(struct fuse4fs *ff,
-					 struct fuse_args *args,
-					 const char *argv0)
+					 struct fuse_args *args)
 {
 	char extra_args[BUFSIZ];
 
 	/* Set up default fuse parameters */
 	snprintf(extra_args, BUFSIZ, "-osubtype=%s,fsname=%s",
-		 get_subtype(argv0),
+		 get_subtype(args->argv[0]),
 		 ff->device);
 	if (ff->no_default_opts == 0)
 		fuse_opt_add_arg(args, extra_args);
@@ -5985,6 +6113,15 @@ static void fuse4fs_compute_libfuse_args(struct fuse4fs *ff,
 		fuse_opt_add_arg(args,"-onosuid");
 #endif
 	}
+
+	/*
+	 * If we're mounting as a systemd service but the mount helper told us
+	 * that allow_other isn't allowed, then disable -okernel.  This mount
+	 * option gets special consideration because it's hardcoded in the
+	 * service unit file.
+	 */
+	if (fuse4fs_service_should_drop_kernel_mode(ff))
+		ff->kernel = 0;
 
 	if (ff->kernel) {
 		/*
@@ -6097,6 +6234,69 @@ static int fuse4fs_event_loop(struct fuse4fs *ff,
 	return fuse_session_loop_mt(ff->fuse, loop_config) == 0 ? 0 : 8;
 }
 
+#ifdef HAVE_FUSE4FS_SERVICE
+static int fuse4fs_service_main(struct fuse_args *args, struct fuse4fs *ff)
+{
+	struct fuse_cmdline_opts opts;
+	struct fuse_loop_config *loop_config = NULL;
+	int ret;
+
+	/*
+	 * Service initialization doesn't fork or change stdout/stderr so we
+	 * can drop the extra logfd right now.
+	 */
+	if (ff->logfd >= 0)
+		close(ff->logfd);
+	ff->logfd = -1;
+
+	ret = fuse_service_parse_cmdline_opts(args, &opts);
+	if (ret != 0) {
+		ret = 1;
+		goto out;
+	}
+
+	ret = fuse4fs_create_session(ff, args, &opts);
+	if (ret || !ff->fuse)
+		goto out_free_opts;
+
+	loop_config = fuse_loop_cfg_create();
+	if (loop_config == NULL) {
+		ret = 7;
+		goto out_destroy_session;
+	}
+
+	if (fuse_set_signal_handlers(ff->fuse) != 0) {
+		ret = 6;
+		goto out_loopcfg;
+	}
+
+	ret = fuse_service_session_mount(ff->service, ff->fuse, S_IFDIR, &opts);
+	if (ret) {
+		ret = 4;
+		goto out_signals;
+	}
+
+	fuse_service_send_goodbye(ff->service, 0);
+	fuse_service_release(ff->service);
+
+	ret = fuse4fs_event_loop(ff, loop_config, &opts);
+
+out_signals:
+	fuse_remove_signal_handlers(ff->fuse);
+out_loopcfg:
+	fuse_loop_cfg_destroy(loop_config);
+out_destroy_session:
+	fuse_session_destroy(ff->fuse);
+	ff->fuse = NULL;
+out_free_opts:
+	free(opts.mountpoint);
+out:
+	return ret;
+}
+#else
+# define fuse4fs_service_main(...)		(8)
+#endif
+
 static int fuse4fs_main(struct fuse_args *args, struct fuse4fs *ff)
 {
 	struct fuse_cmdline_opts opts;
@@ -6168,18 +6368,28 @@ int main(int argc, char *argv[])
 		.bfl = (pthread_mutex_t)PTHREAD_MUTEX_INITIALIZER,
 		.oom_score_adj = -500,
 		.opstate = F4OP_WRITABLE,
+#ifdef HAVE_FUSE4FS_SERVICE
+		.bdev_fd = -1,
+#endif
 	};
 	errcode_t err;
 	FILE *orig_stderr = stderr;
 	int ret;
 
+	ret = fuse4fs_service_connect(&fctx, &args);
+	if (ret) {
+		ret = 1;
+		goto out_exit;
+	}
+
 	ret = fuse_opt_parse(&args, &fctx, fuse4fs_opts, fuse4fs_opt_proc);
 	if (ret)
-		exit(1);
+		goto out_exit;
 	if (fctx.device == NULL) {
 		fprintf(stderr, "Missing ext4 device/image\n");
 		fprintf(stderr, "See '%s -h' for usage\n", argv[0]);
-		exit(1);
+		ret = 1;
+		goto out_exit;
 	}
 
 	/* /dev/sda -> sda for reporting */
@@ -6207,6 +6417,14 @@ int main(int argc, char *argv[])
 		/* operational error */
 		ret = 2;
 		goto out;
+	}
+
+	if (fuse4fs_is_service(&fctx)) {
+		ret = fuse4fs_service_get_config(&fctx);
+		if (ret) {
+			ret = 2;
+			goto out;
+		}
 	}
 
 	try_set_io_flusher(&fctx);
@@ -6264,9 +6482,12 @@ int main(int argc, char *argv[])
 	/* Initialize generation counter */
 	get_random_bytes(&fctx.next_generation, sizeof(unsigned int));
 
-	fuse4fs_compute_libfuse_args(&fctx, &args, argv[0]);
+	fuse4fs_compute_libfuse_args(&fctx, &args);
 
-	ret = fuse4fs_main(&args, &fctx);
+	if (fuse4fs_is_service(&fctx))
+		ret = fuse4fs_service_main(&args, &fctx);
+	else
+		ret = fuse4fs_main(&args, &fctx);
 	switch(ret) {
 	case 0:
 		/* success */
@@ -6308,6 +6529,8 @@ out:
 	if (fctx.device)
 		free(fctx.device);
 	pthread_mutex_destroy(&fctx.bfl);
+out_exit:
+	ret = fuse4fs_service_exit(&fctx, ret);
 	fuse_opt_free_args(&args);
 	return ret;
 }

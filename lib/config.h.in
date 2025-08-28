@@ -142,6 +142,9 @@
 /* Define to 1 if you have the 'ftruncate64' function. */
 #undef HAVE_FTRUNCATE64
 
+/* Define to 1 if fuse4fs should be built with fuse service support */
+#undef HAVE_FUSE4FS_SERVICE
+
 /* Define to 1 if fuse supports cache_readdir */
 #undef HAVE_FUSE_CACHE_READDIR
 
@@ -150,6 +153,9 @@
 
 /* Define to 1 if fuse supports lowlevel API */
 #undef HAVE_FUSE_LOWLEVEL
+
+/* Define to 1 if fuse supports service */
+#undef HAVE_FUSE_SERVICE
 
 /* Define to 1 if you have the 'futimes' function. */
 #undef HAVE_FUTIMES
