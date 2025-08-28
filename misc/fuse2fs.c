@@ -1119,8 +1119,8 @@ static int op_readlink(const char *path, char *buf, size_t len)
 	int ret = 0;
 
 	FUSE2FS_CHECK_CONTEXT(ff);
-	fs = ff->fs;
 	dbg_printf(ff, "%s: path=%s\n", __func__, path);
+	fs = ff->fs;
 	pthread_mutex_lock(&ff->bfl);
 	err = ext2fs_namei(fs, EXT2_ROOT_INO, EXT2_ROOT_INO, path, &ino);
 	if (err || ino == 0) {
@@ -1377,7 +1377,6 @@ static int op_mknod(const char *path, mode_t mode, dev_t dev)
 	int ret = 0;
 
 	FUSE2FS_CHECK_CONTEXT(ff);
-	fs = ff->fs;
 	dbg_printf(ff, "%s: path=%s mode=0%o dev=0x%x\n", __func__, path, mode,
 		   (unsigned int)dev);
 	temp_path = strdup(path);
@@ -1394,6 +1393,7 @@ static int op_mknod(const char *path, mode_t mode, dev_t dev)
 	a = *node_name;
 	*node_name = 0;
 
+	fs = ff->fs;
 	pthread_mutex_lock(&ff->bfl);
 	if (!fs_can_allocate(ff, 2)) {
 		ret = -ENOSPC;
@@ -1509,7 +1509,6 @@ static int op_mkdir(const char *path, mode_t mode)
 	int parent_sgid;
 
 	FUSE2FS_CHECK_CONTEXT(ff);
-	fs = ff->fs;
 	dbg_printf(ff, "%s: path=%s mode=0%o\n", __func__, path, mode);
 	temp_path = strdup(path);
 	if (!temp_path) {
@@ -1525,6 +1524,7 @@ static int op_mkdir(const char *path, mode_t mode)
 	a = *node_name;
 	*node_name = 0;
 
+	fs = ff->fs;
 	pthread_mutex_lock(&ff->bfl);
 	if (!fs_can_allocate(ff, 1)) {
 		ret = -ENOSPC;
@@ -1964,7 +1964,6 @@ static int op_symlink(const char *src, const char *dest)
 	int ret = 0;
 
 	FUSE2FS_CHECK_CONTEXT(ff);
-	fs = ff->fs;
 	dbg_printf(ff, "%s: symlink %s to %s\n", __func__, src, dest);
 	temp_path = strdup(dest);
 	if (!temp_path) {
@@ -1980,6 +1979,7 @@ static int op_symlink(const char *src, const char *dest)
 	a = *node_name;
 	*node_name = 0;
 
+	fs = ff->fs;
 	pthread_mutex_lock(&ff->bfl);
 	if (!fs_can_allocate(ff, 1)) {
 		ret = -ENOSPC;
@@ -2109,8 +2109,8 @@ static int op_rename(const char *from, const char *to
 #endif
 
 	FUSE2FS_CHECK_CONTEXT(ff);
-	fs = ff->fs;
 	dbg_printf(ff, "%s: renaming %s to %s\n", __func__, from, to);
+	fs = ff->fs;
 	pthread_mutex_lock(&ff->bfl);
 	if (!fs_can_allocate(ff, 5)) {
 		ret = -ENOSPC;
@@ -2338,7 +2338,6 @@ static int op_link(const char *src, const char *dest)
 	int ret = 0;
 
 	FUSE2FS_CHECK_CONTEXT(ff);
-	fs = ff->fs;
 	dbg_printf(ff, "%s: src=%s dest=%s\n", __func__, src, dest);
 	temp_path = strdup(dest);
 	if (!temp_path) {
@@ -2354,6 +2353,7 @@ static int op_link(const char *src, const char *dest)
 	a = *node_name;
 	*node_name = 0;
 
+	fs = ff->fs;
 	pthread_mutex_lock(&ff->bfl);
 	if (!fs_can_allocate(ff, 2)) {
 		ret = -ENOSPC;
@@ -2889,9 +2889,9 @@ static int op_read(const char *path EXT2FS_ATTR((unused)), char *buf,
 
 	FUSE2FS_CHECK_CONTEXT(ff);
 	FUSE2FS_CHECK_HANDLE(ff, fh);
-	fs = ff->fs;
 	dbg_printf(ff, "%s: ino=%d off=%jd len=%jd\n", __func__, fh->ino,
 		   (intmax_t) offset, len);
+	fs = ff->fs;
 	pthread_mutex_lock(&ff->bfl);
 	err = ext2fs_file_open(fs, fh->ino, fh->open_flags, &efp);
 	if (err) {
@@ -2946,9 +2946,9 @@ static int op_write(const char *path EXT2FS_ATTR((unused)),
 
 	FUSE2FS_CHECK_CONTEXT(ff);
 	FUSE2FS_CHECK_HANDLE(ff, fh);
-	fs = ff->fs;
 	dbg_printf(ff, "%s: ino=%d off=%jd len=%jd\n", __func__, fh->ino,
 		   (intmax_t) offset, (intmax_t) len);
+	fs = ff->fs;
 	pthread_mutex_lock(&ff->bfl);
 	if (!fs_writeable(fs)) {
 		ret = -EROFS;
@@ -3016,8 +3016,8 @@ static int op_release(const char *path EXT2FS_ATTR((unused)),
 
 	FUSE2FS_CHECK_CONTEXT(ff);
 	FUSE2FS_CHECK_HANDLE(ff, fh);
-	fs = ff->fs;
 	dbg_printf(ff, "%s: ino=%d\n", __func__, fh->ino);
+	fs = ff->fs;
 	pthread_mutex_lock(&ff->bfl);
 
 	if ((fp->flags & O_SYNC) &&
@@ -3050,10 +3050,10 @@ static int op_fsync(const char *path EXT2FS_ATTR((unused)),
 
 	FUSE2FS_CHECK_CONTEXT(ff);
 	FUSE2FS_CHECK_HANDLE(ff, fh);
-	fs = ff->fs;
 	dbg_printf(ff, "%s: ino=%d\n", __func__, fh->ino);
-	/* For now, flush everything, even if it's slow */
+	fs = ff->fs;
 	pthread_mutex_lock(&ff->bfl);
+	/* For now, flush everything, even if it's slow */
 	if (fs_writeable(fs) && fh->open_flags & EXT2_FILE_WRITE) {
 		err = ext2fs_flush2(fs, 0);
 		if (err)
@@ -3592,9 +3592,9 @@ static int op_readdir(const char *path EXT2FS_ATTR((unused)),
 
 	FUSE2FS_CHECK_CONTEXT(ff);
 	FUSE2FS_CHECK_HANDLE(ff, fh);
-	i.fs = ff->fs;
 	dbg_printf(ff, "%s: ino=%d offset=%llu\n", __func__, fh->ino,
 			(unsigned long long)offset);
+	i.fs = ff->fs;
 	pthread_mutex_lock(&ff->bfl);
 	i.buf = buf;
 	i.func = fill_func;
@@ -3624,8 +3624,8 @@ static int op_access(const char *path, int mask)
 	int ret = 0;
 
 	FUSE2FS_CHECK_CONTEXT(ff);
-	fs = ff->fs;
 	dbg_printf(ff, "%s: path=%s mask=0x%x\n", __func__, path, mask);
+	fs = ff->fs;
 	pthread_mutex_lock(&ff->bfl);
 	err = ext2fs_namei(fs, EXT2_ROOT_INO, EXT2_ROOT_INO, path, &ino);
 	if (err || ino == 0) {
@@ -3657,7 +3657,6 @@ static int op_create(const char *path, mode_t mode, struct fuse_file_info *fp)
 	int ret = 0;
 
 	FUSE2FS_CHECK_CONTEXT(ff);
-	fs = ff->fs;
 	dbg_printf(ff, "%s: path=%s mode=0%o\n", __func__, path, mode);
 	temp_path = strdup(path);
 	if (!temp_path) {
@@ -3673,6 +3672,7 @@ static int op_create(const char *path, mode_t mode, struct fuse_file_info *fp)
 	a = *node_name;
 	*node_name = 0;
 
+	fs = ff->fs;
 	pthread_mutex_lock(&ff->bfl);
 	if (!fs_can_allocate(ff, 1)) {
 		ret = -ENOSPC;
@@ -3788,9 +3788,9 @@ static int op_ftruncate(const char *path EXT2FS_ATTR((unused)),
 
 	FUSE2FS_CHECK_CONTEXT(ff);
 	FUSE2FS_CHECK_HANDLE(ff, fh);
-	fs = ff->fs;
 	dbg_printf(ff, "%s: ino=%d len=%jd\n", __func__, fh->ino,
 		   (intmax_t) len);
+	fs = ff->fs;
 	pthread_mutex_lock(&ff->bfl);
 	if (!fs_writeable(fs)) {
 		ret = -EROFS;
@@ -3840,8 +3840,8 @@ static int op_fgetattr(const char *path EXT2FS_ATTR((unused)),
 
 	FUSE2FS_CHECK_CONTEXT(ff);
 	FUSE2FS_CHECK_HANDLE(ff, fh);
-	fs = ff->fs;
 	dbg_printf(ff, "%s: ino=%d\n", __func__, fh->ino);
+	fs = ff->fs;
 	pthread_mutex_lock(&ff->bfl);
 	ret = stat_inode(fs, fh->ino, statbuf);
 	pthread_mutex_unlock(&ff->bfl);
