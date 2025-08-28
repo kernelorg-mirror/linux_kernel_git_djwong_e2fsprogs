@@ -200,6 +200,8 @@ static inline uint64_t round_down(uint64_t b, unsigned int align)
 errcode_t ext2fs_check_ext3_journal(ext2_filsys fs);
 errcode_t ext2fs_run_ext3_journal(ext2_filsys *fs);
 
+const char *err_shortdev;
+
 #ifdef CONFIG_JBD_DEBUG		/* Enabled by configure --enable-jbd-debug */
 int journal_enable_debug = -1;
 #endif
@@ -5342,6 +5344,18 @@ static unsigned long long default_cache_size(void)
 	return ret;
 }
 
+static void fuse2fs_com_err_proc(const char *whoami, errcode_t code,
+				 const char *fmt, va_list args)
+{
+	fprintf(stderr, "FUSE2FS (%s): ", err_shortdev ? err_shortdev : "?");
+	if (whoami)
+		fprintf(stderr, "%s: ", whoami);
+	fprintf(stderr, "%s ", error_message(code));
+        vfprintf(stderr, fmt, args);
+	fprintf(stderr, "\n");
+	fflush(stderr);
+}
+
 int main(int argc, char *argv[])
 {
 	struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
@@ -5370,6 +5384,10 @@ int main(int argc, char *argv[])
 		fctx.shortdev++;
 	else
 		fctx.shortdev = fctx.device;
+
+	/* capture library error messages */
+	err_shortdev = fctx.shortdev;
+	set_com_err_hook(fuse2fs_com_err_proc);
 
 #ifdef ENABLE_NLS
 	setlocale(LC_MESSAGES, "");
@@ -5542,6 +5560,8 @@ out:
 		fflush(orig_stderr);
 	}
 	fuse2fs_unmount(&fctx);
+	reset_com_err_hook();
+	err_shortdev = NULL;
 	if (fctx.device)
 		free(fctx.device);
 	fuse_opt_free_args(&args);
