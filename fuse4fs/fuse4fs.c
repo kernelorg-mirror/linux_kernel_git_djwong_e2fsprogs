@@ -6309,6 +6309,31 @@ static int fuse4fs_iomap_begin_write(struct fuse4fs *ff, ext2_ino_t ino,
 	return 0;
 }
 
+static inline int fuse4fs_should_cache_iomap(struct fuse4fs *ff,
+					     uint32_t opflags,
+					     const struct fuse_file_iomap *map)
+{
+	if (!ff->iomap_cache)
+		return 0;
+
+	/* XXX I think this is stupid */
+	return 1;
+
+	/*
+	 * Don't cache small unwritten extents that are being written to the
+	 * device because the overhead of keeping the cache updated will tank
+	 * performance.
+	 */
+	if ((opflags & (FUSE_IOMAP_OP_WRITE | FUSE_IOMAP_OP_DIRECT)) == 0)
+		return 1;
+	if (map->type != FUSE_IOMAP_TYPE_UNWRITTEN)
+		return 1;
+	if (map->length >= FUSE4FS_FSB_TO_B(ff, 16))
+		return 1;
+
+	return 0;
+}
+
 static void op_iomap_begin(fuse_req_t req, fuse_ino_t fino, uint64_t dontcare,
 			   off_t pos, uint64_t count, uint32_t opflags)
 {
@@ -6379,7 +6404,7 @@ static void op_iomap_begin(fuse_req_t req, fuse_ino_t fino, uint64_t dontcare,
 	 * Cache the mapping in the kernel so that we can reuse them for
 	 * subsequent IO.
 	 */
-	if (ff->iomap_cache) {
+	if (fuse4fs_should_cache_iomap(ff, opflags, &read)) {
 		ret = fuse_lowlevel_notify_iomap_upsert(ff->fuse, fino, ino,
 							&read, NULL);
 		if (ret) {
