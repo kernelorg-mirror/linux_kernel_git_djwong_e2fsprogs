@@ -25,7 +25,8 @@ OBJS=		cstring.o \
 		quotaio_v2.o \
 		quotaio_tree.o \
 		dict.o \
-		devname.o
+		devname.o \
+		cache.o
 
 SRCS=		$(srcdir)/argv_parse.c \
 		$(srcdir)/cstring.c \
@@ -40,7 +41,8 @@ SRCS=		$(srcdir)/argv_parse.c \
 		$(srcdir)/quotaio_tree.c \
 		$(srcdir)/quotaio_v2.c \
 		$(srcdir)/dict.c \
-		$(srcdir)/devname.c
+		$(srcdir)/devname.c \
+		$(srcdir)/cache.c
 
 LIBRARY= libsupport
 LIBDIR= support
@@ -183,3 +185,5 @@ dict.o: $(srcdir)/dict.c $(top_builddir)/lib/config.h \
  $(top_builddir)/lib/dirpaths.h $(srcdir)/dict.h
 devname.o: $(srcdir)/devname.c $(top_builddir)/lib/config.h \
  $(top_builddir)/lib/dirpaths.h $(srcdir)/devname.h $(srcdir)/nls-enable.h
+cache.o: $(srcdir)/cache.c $(top_builddir)/lib/config.h \
+ $(srcdir)/cache.h $(srcdir)/list.h $(srcdir)/xbitops.h
