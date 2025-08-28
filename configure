@@ -14769,6 +14769,52 @@ fi
 fi
 
 
+if test "$FUSE_USE_VERSION" -ge 30
+then
+{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking for iomap_begin in libfuse" >&5
+printf %s "checking for iomap_begin in libfuse... " >&6; }
+cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+
+#define _GNU_SOURCE
+#define _FILE_OFFSET_BITS	64
+#define FUSE_USE_VERSION	399
+#include <fuse.h>
+
+int
+main (void)
+{
+
+struct fuse_operations fs_ops = {
+	.iomap_begin = NULL,
+	.iomap_end = NULL,
+};
+struct fuse_file_iomap narf = { };
+
+  ;
+  return 0;
+}
+
+_ACEOF
+if ac_fn_c_try_link "$LINENO"
+then :
+  have_fuse_iomap=yes
+   { printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: yes" >&5
+printf "%s\n" "yes" >&6; }
+else $as_nop
+  { printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: no" >&5
+printf "%s\n" "no" >&6; }
+fi
+rm -f core conftest.err conftest.$ac_objext conftest.beam \
+    conftest$ac_exeext conftest.$ac_ext
+if test "$have_fuse_iomap" = yes; then
+  FUSE_USE_VERSION=399
+
+printf "%s\n" "#define HAVE_FUSE_IOMAP 1" >>confdefs.h
+
+fi
+fi
+
 if test -n "$FUSE_USE_VERSION"
 then
 
