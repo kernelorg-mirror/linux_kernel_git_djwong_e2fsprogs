@@ -90,6 +90,9 @@ Note that these options can still be overridden (e.g.
 .I nosuid
 ) later.
 .TP
+\fB-o\fR lazytime
+if iomap is enabled, enable lazy updates of timestamps
+.TP
 \fB-o\fR lockfile=path
 use this file to control access to the filesystem
 .TP
@@ -98,6 +101,9 @@ do not include default fuse options
 .TP
 \fB-o\fR norecovery
 do not replay the journal and mount the file system read-only
+.TP
+\fB-o\fR strictatime
+if iomap is enabled, update atime on every access
 .SS "FUSE options:"
 .TP
 \fB-d -o\fR debug
