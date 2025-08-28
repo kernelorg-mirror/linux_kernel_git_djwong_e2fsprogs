@@ -703,6 +703,8 @@ UNI_DIFF_OPTS
 SEM_INIT_LIB
 FUSE4FS_CMT
 FUSE2FS_CMT
+fuse_service_socket_dir
+have_fuse_service
 FUSE_LIB
 fuse3_LIBS
 fuse3_CFLAGS
@@ -933,6 +935,7 @@ with_libiconv_prefix
 with_libintl_prefix
 enable_largefile
 with_libarchive
+with_fuse_service_socket_dir
 enable_fuse2fs
 enable_fuse4fs
 enable_lto
@@ -1654,6 +1657,8 @@ Optional Packages:
   --with-libintl-prefix[=DIR]  search for libintl in DIR/include and DIR/lib
   --without-libintl-prefix     don't search for libintl in includedir and libdir
   --without-libarchive    disable use of libarchive
+  --with-fuse-service-socket-dir[=DIR]
+                          Create fuse3 filesystem service sockets in DIR.
   --with-multiarch=ARCH   specify the multiarch triplet
   --with-udev-rules-dir[=DIR]
                           Install udev rules into DIR.
@@ -14333,6 +14338,134 @@ if test -n "$have_fuse_lowlevel"
 then
 
 printf "%s\n" "#define HAVE_FUSE_LOWLEVEL 1" >>confdefs.h
+
+fi
+
+have_fuse_service=
+fuse_service_socket_dir=
+if test -n "$have_fuse_lowlevel"
+then
+
+# Check whether --with-fuse_service_socket_dir was given.
+if test ${with_fuse_service_socket_dir+y}
+then :
+  withval=$with_fuse_service_socket_dir;
+else $as_nop
+  with_fuse_service_socket_dir=yes
+fi
+
+	if test "x${with_fuse_service_socket_dir}" != "xno"
+then :
+
+		if test "x${with_fuse_service_socket_dir}" = "xyes"
+then :
+
+
+pkg_failed=no
+{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking for fuse3" >&5
+printf %s "checking for fuse3... " >&6; }
+
+if test -n "$fuse3_CFLAGS"; then
+    pkg_cv_fuse3_CFLAGS="$fuse3_CFLAGS"
+ elif test -n "$PKG_CONFIG"; then
+    if test -n "$PKG_CONFIG" && \
+    { { printf "%s\n" "$as_me:${as_lineno-$LINENO}: \$PKG_CONFIG --exists --print-errors \"fuse3\""; } >&5
+  ($PKG_CONFIG --exists --print-errors "fuse3") 2>&5
+  ac_status=$?
+  printf "%s\n" "$as_me:${as_lineno-$LINENO}: \$? = $ac_status" >&5
+  test $ac_status = 0; }; then
+  pkg_cv_fuse3_CFLAGS=`$PKG_CONFIG --cflags "fuse3" 2>/dev/null`
+		      test "x$?" != "x0" && pkg_failed=yes
+else
+  pkg_failed=yes
+fi
+ else
+    pkg_failed=untried
+fi
+if test -n "$fuse3_LIBS"; then
+    pkg_cv_fuse3_LIBS="$fuse3_LIBS"
+ elif test -n "$PKG_CONFIG"; then
+    if test -n "$PKG_CONFIG" && \
+    { { printf "%s\n" "$as_me:${as_lineno-$LINENO}: \$PKG_CONFIG --exists --print-errors \"fuse3\""; } >&5
+  ($PKG_CONFIG --exists --print-errors "fuse3") 2>&5
+  ac_status=$?
+  printf "%s\n" "$as_me:${as_lineno-$LINENO}: \$? = $ac_status" >&5
+  test $ac_status = 0; }; then
+  pkg_cv_fuse3_LIBS=`$PKG_CONFIG --libs "fuse3" 2>/dev/null`
+		      test "x$?" != "x0" && pkg_failed=yes
+else
+  pkg_failed=yes
+fi
+ else
+    pkg_failed=untried
+fi
+
+
+
+if test $pkg_failed = yes; then
+        { printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: no" >&5
+printf "%s\n" "no" >&6; }
+
+if $PKG_CONFIG --atleast-pkgconfig-version 0.20; then
+        _pkg_short_errors_supported=yes
+else
+        _pkg_short_errors_supported=no
+fi
+        if test $_pkg_short_errors_supported = yes; then
+                fuse3_PKG_ERRORS=`$PKG_CONFIG --short-errors --print-errors --cflags --libs "fuse3" 2>&1`
+        else
+                fuse3_PKG_ERRORS=`$PKG_CONFIG --print-errors --cflags --libs "fuse3" 2>&1`
+        fi
+        # Put the nasty error message in config.log where it belongs
+        echo "$fuse3_PKG_ERRORS" >&5
+
+
+				with_fuse_service_socket_dir=""
+
+elif test $pkg_failed = untried; then
+        { printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: no" >&5
+printf "%s\n" "no" >&6; }
+
+				with_fuse_service_socket_dir=""
+
+else
+        fuse3_CFLAGS=$pkg_cv_fuse3_CFLAGS
+        fuse3_LIBS=$pkg_cv_fuse3_LIBS
+        { printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: yes" >&5
+printf "%s\n" "yes" >&6; }
+
+				with_fuse_service_socket_dir="$($PKG_CONFIG --variable=service_socket_dir fuse3)"
+
+fi
+
+
+fi
+		{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking for fuse3 service socket dir" >&5
+printf %s "checking for fuse3 service socket dir... " >&6; }
+		fuse_service_socket_dir="${with_fuse_service_socket_dir}"
+		if test -n "${fuse_service_socket_dir}"
+then :
+
+			{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: ${fuse_service_socket_dir}" >&5
+printf "%s\n" "${fuse_service_socket_dir}" >&6; }
+			have_fuse_service="yes"
+
+else $as_nop
+
+			{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: no" >&5
+printf "%s\n" "no" >&6; }
+			have_fuse_service="no"
+
+fi
+
+fi
+fi
+
+
+if test "$have_fuse_service" = yes
+then
+
+printf "%s\n" "#define HAVE_FUSE_SERVICE 1" >>confdefs.h
 
 fi
 

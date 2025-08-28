@@ -17,6 +17,13 @@ UMANPAGES=
 @FUSE4FS_CMT@UPROGS+=fuse4fs
 @FUSE4FS_CMT@UMANPAGES+=fuse4fs.1
 
+ifeq ($(HAVE_SYSTEMD),yes)
+SERVICE_FILES	+= fuse4fs.socket fuse4fs@.service
+INSTALLDIRS_TGT	+= installdirs-systemd
+INSTALL_TGT	+= install-systemd
+UNINSTALL_TGT	+= uninstall-systemd
+endif
+
 FUSE4FS_OBJS=	fuse4fs.o journal.o recovery.o revoke.o
 
 PROFILED_FUSE4FS_OJBS=	profiled/fuse4fs.o profiled/journal.o \
@@ -54,7 +61,7 @@ DEPEND_CFLAGS = -I$(top_srcdir)/e2fsck
 @PROFILE_CMT@	$(Q) $(CC) $(ALL_CFLAGS) -g -pg -o profiled/$*.o -c $<
 
 all:: profiled $(SPROGS) $(UPROGS) $(USPROGS) $(SMANPAGES) $(UMANPAGES) \
-	$(FMANPAGES) $(LPROGS)
+	$(FMANPAGES) $(LPROGS) $(SERVICE_FILES)
 
 all-static::
 
@@ -70,6 +77,14 @@ fuse4fs: $(FUSE4FS_OBJS) $(DEPLIBS) $(DEPLIBBLKID) $(DEPLIBUUID) \
 	$(Q) $(CC) $(ALL_LDFLAGS) -o fuse4fs $(FUSE4FS_OBJS) $(LIBS) \
 		$(LIBFUSE) $(LIBBLKID) $(LIBUUID) $(LIBEXT2FS) $(LIBINTL) \
 		$(CLOCK_GETTIME_LIB) $(SYSLIBS) $(LIBS_E2P)
+
+%.socket: %.socket.in $(DEP_SUBSTITUTE)
+	$(E) "	SUBST $@"
+	$(Q) $(SUBSTITUTE_UPTIME) $< $@
+
+%.service: %.service.in $(DEP_SUBSTITUTE)
+	$(E) "	SUBST $@"
+	$(Q) $(SUBSTITUTE_UPTIME) $< $@
 
 journal.o: $(srcdir)/../debugfs/journal.c
 	$(E) "	CC $<"
@@ -93,11 +108,15 @@ fuse4fs.1: $(DEP_SUBSTITUTE) $(srcdir)/fuse4fs.1.in
 	$(E) "	SUBST $@"
 	$(Q) $(SUBSTITUTE_UPTIME) $(srcdir)/fuse4fs.1.in fuse4fs.1
 
-installdirs:
+installdirs: $(INSTALLDIRS_TGT)
 	$(E) "	MKDIR_P $(bindir) $(man1dir)"
 	$(Q) $(MKDIR_P) $(DESTDIR)$(bindir) $(DESTDIR)$(man1dir)
 
-install: all $(UMANPAGES) installdirs
+installdirs-systemd:
+	$(E) "	MKDIR_P $(SYSTEMD_SYSTEM_UNIT_DIR)"
+	$(Q) $(MKDIR_P) $(DESTDIR)$(SYSTEMD_SYSTEM_UNIT_DIR)
+
+install: all $(UMANPAGES) installdirs $(INSTALL_TGT)
 	$(Q) for i in $(UPROGS); do \
 		$(ES) "	INSTALL $(bindir)/$$i"; \
 		$(INSTALL_PROGRAM) $$i $(DESTDIR)$(bindir)/$$i; \
@@ -110,13 +129,19 @@ install: all $(UMANPAGES) installdirs
 		$(INSTALL_DATA) $$i $(DESTDIR)$(man1dir)/$$i; \
 	done
 
+install-systemd: $(SERVICE_FILES) installdirs-systemd
+	$(Q) for i in $(SERVICE_FILES); do \
+		$(ES) "	INSTALL_DATA $(SYSTEMD_SYSTEM_UNIT_DIR)/$$i"; \
+		$(INSTALL_DATA) $$i $(DESTDIR)$(SYSTEMD_SYSTEM_UNIT_DIR)/$$i; \
+	done
+
 install-strip: install
 	$(Q) for i in $(UPROGS); do \
 		$(E) "	STRIP $(bindir)/$$i"; \
 		$(STRIP) $(DESTDIR)$(bindir)/$$i; \
 	done
 
-uninstall:
+uninstall: $(UNINSTALL_TGT)
 	for i in $(UPROGS); do \
 		$(RM) -f $(DESTDIR)$(bindir)/$$i; \
 	done
@@ -124,9 +149,16 @@ uninstall:
 		$(RM) -f $(DESTDIR)$(man1dir)/$$i; \
 	done
 
+uninstall-systemd:
+	for i in $(SERVICE_FILES); do \
+		$(RM) -f $(DESTDIR)$(SYSTEMD_SYSTEM_UNIT_DIR)/$$i; \
+	done
+
 clean::
 	$(RM) -f $(UPROGS) $(UMANPAGES) profile.h \
 		fuse4fs.profiled \
+		$(SERVICE_FILES) \
+		fuse4fs.socket \
 		profiled/*.o \#* *.s *.o *.a *~ core gmon.out
 
 mostlyclean: clean

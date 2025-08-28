@@ -1,2 +1,4 @@
 /usr/bin/fuse4fs
 /usr/share/man/man1/fuse4fs.1
+[linux-any] lib/systemd/system/fuse4fs.socket
+[linux-any] lib/systemd/system/fuse4fs@.service

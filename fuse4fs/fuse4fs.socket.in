@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Copyright (C) 2025 Oracle.  All Rights Reserved.
+# Author: Darrick J. Wong <djwong@kernel.org>
+[Unit]
+Description=Socket for ext4 Service
+
+[Socket]
+ListenSequentialPacket=@fuse_service_socket_dir@/ext2
+ListenSequentialPacket=@fuse_service_socket_dir@/ext3
+ListenSequentialPacket=@fuse_service_socket_dir@/ext4
+Accept=yes
+SocketMode=0660
+RemoveOnStop=yes
