@@ -683,4 +683,7 @@
 /* Define for large files, on AIX-style hosts. */
 #undef _LARGE_FILES
 
+/* Define to 1 if CLOCK_MONOTONIC is present */
+#undef HAVE_CLOCK_MONOTONIC
+
 #include <dirpaths.h>
