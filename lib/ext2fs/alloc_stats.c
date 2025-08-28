@@ -82,6 +82,9 @@ void ext2fs_block_alloc_stats2(ext2_filsys fs, blk64_t blk, int inuse)
 			     -inuse * (blk64_t) EXT2FS_CLUSTER_RATIO(fs));
 	ext2fs_mark_super_dirty(fs);
 	ext2fs_mark_bb_dirty(fs);
+	if (inuse < 0)
+		io_channel_invalidate_blocks(fs->io, blk,
+					     EXT2FS_CLUSTER_RATIO(fs));
 	if (fs->block_alloc_stats)
 		(fs->block_alloc_stats)(fs, (blk64_t) blk, inuse);
 }
@@ -144,11 +147,14 @@ void ext2fs_block_alloc_stats_range(ext2_filsys fs, blk64_t blk,
 		ext2fs_bg_flags_clear(fs, group, EXT2_BG_BLOCK_UNINIT);
 		ext2fs_group_desc_csum_set(fs, group);
 		ext2fs_free_blocks_count_add(fs->super, -inuse * (blk64_t) n);
+
 		blk += n;
 		num -= n;
 	}
 	ext2fs_mark_super_dirty(fs);
 	ext2fs_mark_bb_dirty(fs);
+	if (inuse < 0)
+		io_channel_invalidate_blocks(fs->io, orig_blk, orig_num);
 	if (fs->block_alloc_stats_range)
 		(fs->block_alloc_stats_range)(fs, orig_blk, orig_num, inuse);
 }
