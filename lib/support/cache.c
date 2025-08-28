@@ -101,7 +101,8 @@ cache_expand(
 void
 cache_walk(
 	struct cache		*cache,
-	cache_walk_t		visit)
+	cache_walk_t		visit,
+	void			*data)
 {
 	struct cache_hash	*hash;
 	struct cache_node	*pos;
@@ -111,7 +112,7 @@ cache_walk(
 		hash = &cache->c_hash[i];
 		pthread_mutex_lock(&hash->ch_mutex);
 		list_for_each_entry(pos, &hash->ch_list, cn_hash)
-			visit(cache, pos);
+			visit(cache, pos, data);
 		pthread_mutex_unlock(&hash->ch_mutex);
 	}
 }
@@ -126,7 +127,8 @@ cache_walk(
 static void
 cache_zero_check(
 	struct cache		*cache,
-	struct cache_node	*node)
+	struct cache_node	*node,
+	void			*data)
 {
 	if (node->cn_count > 0) {
 		fprintf(stderr, "%s: refcount is %u, not zero (node=%p)\n",
@@ -134,7 +136,7 @@ cache_zero_check(
 		cache_abort();
 	}
 }
-#define cache_destroy_check(c)	cache_walk((c), cache_zero_check)
+#define cache_destroy_check(c)	cache_walk((c), cache_zero_check, NULL)
 #else
 #define cache_destroy_check(c)	do { } while (0)
 #endif
