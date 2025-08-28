@@ -17,9 +17,8 @@
 #include "cache.h"
 #include "xbitops.h"
 
-#define CACHE_DEBUG 1
 #undef CACHE_DEBUG
-#define CACHE_DEBUG 1
+/* #define CACHE_DEBUG 1 */
 #undef CACHE_ABORT
 /* #define CACHE_ABORT 1 */
 
@@ -28,6 +27,8 @@
 #ifdef CACHE_DEBUG
 # include <assert.h>
 # define ASSERT(x)		assert(x)
+#else
+# define ASSERT(x)		do { } while (0)
 #endif
 
 static unsigned int cache_generic_bulkrelse(struct cache *, struct list_head *);
