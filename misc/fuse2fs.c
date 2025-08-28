@@ -946,6 +946,15 @@ static errcode_t fuse2fs_open(struct fuse2fs *ff, int libext2_flags)
 
 	err = ext2fs_open2(ff->device, options, flags, 0, 0, unix_io_manager,
 			   &ff->fs);
+	if (err == EPERM) {
+		err_printf(ff, "%s.\n",
+			   _("read-only device, trying to mount norecovery"));
+		flags &= ~EXT2_FLAG_RW;
+		ff->ro = 1;
+		ff->norecovery = 1;
+		err = ext2fs_open2(ff->device, options, flags, 0, 0,
+				   unix_io_manager, &ff->fs);
+	}
 	if (err) {
 		err_printf(ff, "%s.\n", error_message(err));
 		err_printf(ff, "%s\n", _("Please run e2fsck -fy."));
