@@ -1089,6 +1089,13 @@ static int fuse4fs_inum_access(struct fuse4fs *ff, const struct fuse_ctx *ctxt,
 		   inode_uid(inode), inode_gid(inode),
 		   ctxt->uid, ctxt->gid);
 
+	/* linked files cannot be on the unlinked list or deleted */
+	if (inode.i_dtime != 0) {
+		dbg_printf(ff, "%s: unlinked ino=%d dtime=0x%x\n",
+			   __func__, ino, inode.i_dtime);
+		return -ENOENT;
+	}
+
 	/* existence check */
 	if (mask == 0)
 		return 0;
@@ -2294,9 +2301,80 @@ out_close:
 	return 0;
 }
 
+static int fuse4fs_add_to_orphans(struct fuse4fs *ff, ext2_ino_t ino,
+				  struct ext2_inode_large *inode)
+{
+	ext2_filsys fs = ff->fs;
+
+	dbg_printf(ff, "%s: orphan ino=%d dtime=%d next=%d\n",
+		   __func__, ino, inode->i_dtime, fs->super->s_last_orphan);
+
+	inode->i_dtime = fs->super->s_last_orphan;
+	fs->super->s_last_orphan = ino;
+	ext2fs_mark_super_dirty(fs);
+
+	return 0;
+}
+
+static int fuse4fs_remove_from_orphans(struct fuse4fs *ff, ext2_ino_t ino,
+				       struct ext2_inode_large *inode)
+{
+	ext2_filsys fs = ff->fs;
+	ext2_ino_t prev_orphan;
+	errcode_t err;
+
+	dbg_printf(ff, "%s: super=%d ino=%d next=%d\n",
+		   __func__, fs->super->s_last_orphan, ino, inode->i_dtime);
+
+	/* If we're lucky, the ondisk superblock points to us */
+	if (fs->super->s_last_orphan == ino) {
+		dbg_printf(ff, "%s: superblock\n", __func__);
+
+		fs->super->s_last_orphan = inode->i_dtime;
+		inode->i_dtime = 0;
+		ext2fs_mark_super_dirty(fs);
+		return 0;
+	}
+
+	/* Otherwise walk the ondisk orphan list. */
+	prev_orphan = fs->super->s_last_orphan;
+	while (prev_orphan != 0) {
+		struct ext2_inode_large orphan;
+
+		err = fuse4fs_read_inode(fs, prev_orphan, &orphan);
+		if (err)
+			return translate_error(fs, prev_orphan, err);
+
+		if (orphan.i_dtime == prev_orphan)
+			return translate_error(fs, prev_orphan,
+					       EXT2_ET_FILESYSTEM_CORRUPTED);
+
+		if (orphan.i_dtime == ino) {
+			dbg_printf(ff, "%s: prev=%d\n",
+				   __func__, prev_orphan);
+
+			orphan.i_dtime = inode->i_dtime;
+			inode->i_dtime = 0;
+
+			err = fuse4fs_write_inode(fs, prev_orphan, &orphan);
+			if (err)
+				return translate_error(fs, prev_orphan, err);
+
+			return 0;
+		}
+
+		dbg_printf(ff, "%s: orphan=%d next=%d\n",
+			   __func__, prev_orphan, orphan.i_dtime);
+		prev_orphan = orphan.i_dtime;
+	}
+
+	return translate_error(fs, ino, EXT2_ET_FILESYSTEM_CORRUPTED);
+}
+
 static int fuse4fs_remove_inode(struct fuse4fs *ff, ext2_ino_t ino)
 {
 	ext2_filsys fs = ff->fs;
+	struct fuse4fs_inode *fi;
 	errcode_t err;
 	struct ext2_inode_large inode;
 	int ret = 0;
@@ -2318,7 +2396,6 @@ static int fuse4fs_remove_inode(struct fuse4fs *ff, ext2_ino_t ino)
 		if (!ext2fs_dir_link_empty(EXT2_INODE(&inode)))
 			return translate_error(fs, ino, EXT2_ET_INODE_CORRUPTED);
 		inode.i_links_count = 0;
-		ext2fs_set_dtime(fs, EXT2_INODE(&inode));
 	} else {
 		/*
 		 * Any other file type can be hardlinked, so all we need to do
@@ -2327,8 +2404,6 @@ static int fuse4fs_remove_inode(struct fuse4fs *ff, ext2_ino_t ino)
 		if (inode.i_links_count == 0)
 			return translate_error(fs, ino, EXT2_ET_INODE_CORRUPTED);
 		inode.i_links_count--;
-		if (!inode.i_links_count)
-			ext2fs_set_dtime(fs, EXT2_INODE(&inode));
 	}
 
 	ret = update_ctime(fs, ino, &inode);
@@ -2339,6 +2414,26 @@ static int fuse4fs_remove_inode(struct fuse4fs *ff, ext2_ino_t ino)
 	if (inode.i_links_count)
 		goto write_out;
 
+	err = fuse4fs_iget(ff, ino, &fi);
+	if (err)
+		return translate_error(fs, ino, err);
+
+	dbg_printf(ff, "%s: put ino=%d opencount=%d\n", __func__, ino,
+		   fi->i_open_count);
+
+	/*
+	 * The file is unlinked but still open; add it to the orphan list and
+	 * free it later.
+	 */
+	if (fi->i_open_count > 0) {
+		fuse4fs_iput(ff, fi);
+		ret = fuse4fs_add_to_orphans(ff, ino, &inode);
+		if (ret)
+			return ret;
+
+		goto write_out;
+	}
+	fuse4fs_iput(ff, fi);
 
 	if (ext2fs_has_feature_ea_inode(fs->super)) {
 		ret = fuse4fs_remove_ea_inodes(ff, ino, &inode);
@@ -2358,6 +2453,7 @@ static int fuse4fs_remove_inode(struct fuse4fs *ff, ext2_ino_t ino)
 			return translate_error(fs, ino, err);
 	}
 
+	ext2fs_set_dtime(fs, EXT2_INODE(&inode));
 	ext2fs_inode_alloc_stats2(fs, ino, -1,
 				  LINUX_S_ISDIR(inode.i_mode));
 
@@ -2946,6 +3042,16 @@ static void op_link(fuse_req_t req, fuse_ino_t child_fino,
 		goto out2;
 	}
 
+	/*
+	 * Linking a file back into the filesystem requires removing it from
+	 * the orphan list.
+	 */
+	if (inode.i_links_count == 0) {
+		ret = fuse4fs_remove_from_orphans(ff, child, &inode);
+		if (ret)
+			goto out2;
+	}
+
 	ext2fs_inc_nlink(fs, EXT2_INODE(&inode));
 	ret = update_ctime(fs, child, &inode);
 	if (ret)
@@ -3229,7 +3335,8 @@ static void detect_linux_executable_open(int kernel_flags, int *access_check,
 #endif /* __linux__ */
 
 static int fuse4fs_open_file(struct fuse4fs *ff, const struct fuse_ctx *ctxt,
-			     ext2_ino_t ino, struct fuse_file_info *fp)
+			     ext2_ino_t ino,
+			     struct fuse_file_info *fp)
 {
 	ext2_filsys fs = ff->fs;
 	errcode_t err;
@@ -3305,6 +3412,8 @@ static int fuse4fs_open_file(struct fuse4fs *ff, const struct fuse_ctx *ctxt,
 
 	file->check_flags = check;
 	fuse4fs_set_handle(fp, file);
+	dbg_printf(ff, "%s: ino=%d fh=%p opencount=%d\n", __func__, ino, file,
+		   file->fi->i_open_count);
 
 out:
 	if (ret)
@@ -3321,6 +3430,8 @@ static void op_open(fuse_req_t req, fuse_ino_t fino, struct fuse_file_info *fp)
 
 	FUSE4FS_CHECK_CONTEXT(req);
 	FUSE4FS_CONVERT_FINO(req, &ino, fino);
+	dbg_printf(ff, "%s: ino=%d\n", __func__, ino);
+
 	fuse4fs_start(ff);
 	ret = fuse4fs_open_file(ff, ctxt, ino, fp);
 	fuse4fs_finish(ff, ret);
@@ -3469,6 +3580,55 @@ out:
 		fuse_reply_err(req, -ret);
 }
 
+static int fuse4fs_free_unlinked(struct fuse4fs *ff, ext2_ino_t ino)
+{
+	struct ext2_inode_large inode;
+	ext2_filsys fs = ff->fs;
+	errcode_t err;
+	int ret = 0;
+
+	err = fuse4fs_read_inode(fs, ino, &inode);
+	if (err)
+		return translate_error(fs, ino, err);
+
+	if (inode.i_links_count > 0)
+		return 0;
+
+	dbg_printf(ff, "%s: ino=%d links=%d\n", __func__, ino,
+		   inode.i_links_count);
+
+	if (ext2fs_has_feature_ea_inode(fs->super)) {
+		ret = fuse4fs_remove_ea_inodes(ff, ino, &inode);
+		if (ret)
+			return ret;
+	}
+
+	/* Nobody holds this file; free its blocks! */
+	err = ext2fs_free_ext_attr(fs, ino, &inode);
+	if (err)
+		return translate_error(fs, ino, err);
+
+	if (ext2fs_inode_has_valid_blocks2(fs, EXT2_INODE(&inode))) {
+		err = ext2fs_punch(fs, ino, EXT2_INODE(&inode), NULL,
+				   0, ~0ULL);
+		if (err)
+			return translate_error(fs, ino, err);
+	}
+
+	ret = fuse4fs_remove_from_orphans(ff, ino, &inode);
+	if (ret)
+		return ret;
+
+	ext2fs_set_dtime(fs, EXT2_INODE(&inode));
+	ext2fs_inode_alloc_stats2(fs, ino, -1, LINUX_S_ISDIR(inode.i_mode));
+
+	err = fuse4fs_write_inode(fs, ino, &inode);
+	if (err)
+		return translate_error(fs, ino, err);
+
+	return 0;
+}
+
 static void op_release(fuse_req_t req, fuse_ino_t fino EXT2FS_ATTR((unused)),
 		       struct fuse_file_info *fp)
 {
@@ -3480,8 +3640,20 @@ static void op_release(fuse_req_t req, fuse_ino_t fino EXT2FS_ATTR((unused)),
 
 	FUSE4FS_CHECK_CONTEXT(req);
 	FUSE4FS_CHECK_HANDLE(req, fh);
-	dbg_printf(ff, "%s: ino=%d\n", __func__, fh->ino);
+	dbg_printf(ff, "%s: ino=%d fh=%p opencount=%u\n",
+		   __func__, fh->ino, fh, fh->fi->i_open_count);
+
 	fs = fuse4fs_start(ff);
+
+	/*
+	 * If the file is no longer open and is unlinked, free it, which
+	 * removes it from the ondisk list.
+	 */
+	if (--fh->fi->i_open_count == 0) {
+		ret = fuse4fs_free_unlinked(ff, fh->ino);
+		if (ret)
+			goto out_iput;
+	}
 
 	if ((fp->flags & O_SYNC) &&
 	    fuse4fs_is_writeable(ff) &&
@@ -3491,6 +3663,7 @@ static void op_release(fuse_req_t req, fuse_ino_t fino EXT2FS_ATTR((unused)),
 			ret = translate_error(fs, fh->ino, err);
 	}
 
+out_iput:
 	fuse4fs_iput(ff, fh->fi);
 	fp->fh = 0;
 	fuse4fs_finish(ff, ret);
