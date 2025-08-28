@@ -273,6 +273,7 @@ struct fuse4fs {
 	enum fuse4fs_feature_toggle iomap_want;
 	enum fuse4fs_iomap_state iomap_state;
 	uint32_t iomap_dev;
+	uint64_t iomap_cap;
 #endif
 	unsigned int blockmask;
 	unsigned long offset;
@@ -1239,6 +1240,8 @@ static errcode_t fuse4fs_open(struct fuse4fs *ff, int libext2_flags)
 
 	if (ff->directio)
 		flags |= EXT2_FLAG_DIRECT_IO;
+
+	dbg_printf(ff, "opening with flags=0x%x\n", flags);
 
 	err = ext2fs_open2(ff->device, options, flags, 0, 0, unix_io_manager,
 			   &ff->fs);
@@ -6907,6 +6910,19 @@ static unsigned long long default_cache_size(void)
 	return ret;
 }
 
+#ifdef HAVE_FUSE_IOMAP
+static inline bool fuse4fs_discover_iomap(struct fuse4fs *ff)
+{
+	if (ff->iomap_want == FT_DISABLE)
+		return false;
+
+	ff->iomap_cap = fuse_lowlevel_discover_iomap(-1);
+	return ff->iomap_cap & FUSE_IOMAP_SUPPORT_FILEIO;
+}
+#else
+# define fuse4fs_discover_iomap(...)	(false)
+#endif
+
 static inline bool fuse4fs_want_fuseblk(const struct fuse4fs *ff)
 {
 	if (ff->noblkdev)
@@ -7048,6 +7064,7 @@ int main(int argc, char *argv[])
 	errcode_t err;
 	FILE *orig_stderr = stderr;
 	char extra_args[BUFSIZ];
+	bool iomap_detected = false;
 	int ret;
 
 	ret = fuse_opt_parse(&args, &fctx, fuse4fs_opts, fuse4fs_opt_proc);
@@ -7121,7 +7138,8 @@ int main(int argc, char *argv[])
 		goto out;
 	}
 
-	if (fuse4fs_want_fuseblk(&fctx)) {
+	iomap_detected = fuse4fs_discover_iomap(&fctx);
+	if (!iomap_detected && fuse4fs_want_fuseblk(&fctx)) {
 		/*
 		 * If this is a block device, we want to close the fs, reopen
 		 * the block device in non-exclusive mode, and start the fuse
