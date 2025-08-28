@@ -695,6 +695,7 @@ gcc_ranlib
 gcc_ar
 UNI_DIFF_OPTS
 SEM_INIT_LIB
+FUSE4FS_CMT
 FUSE2FS_CMT
 FUSE_LIB
 fuse3_LIBS
@@ -929,6 +930,7 @@ with_libintl_prefix
 enable_largefile
 with_libarchive
 enable_fuse2fs
+enable_fuse4fs
 enable_lto
 enable_ubsan
 enable_addrsan
@@ -1625,6 +1627,7 @@ Optional Features:
   --disable-rpath         do not hardcode runtime library paths
   --disable-largefile     omit support for large files
   --disable-fuse2fs       do not build fuse2fs
+  --disable-fuse4fs       do not build fuse4fs
   --enable-lto            enable link time optimization
   --enable-ubsan          enable undefined behavior sanitizer
   --enable-addrsan        enable address sanitizer
@@ -14609,6 +14612,50 @@ printf "%s\n" "#define FUSE_USE_VERSION $FUSE_USE_VERSION" >>confdefs.h
 
 fi
 
+have_fuse_lowlevel=
+if test -n "$FUSE_USE_VERSION"
+then
+	{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking for lowlevel interface in libfuse" >&5
+printf %s "checking for lowlevel interface in libfuse... " >&6; }
+	cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+
+	#define _GNU_SOURCE
+	#define _FILE_OFFSET_BITS	64
+	#define FUSE_USE_VERSION	314
+	#include <fuse_lowlevel.h>
+
+int
+main (void)
+{
+
+	struct fuse_lowlevel_ops fs_ops = { };
+
+  ;
+  return 0;
+}
+
+_ACEOF
+if ac_fn_c_try_link "$LINENO"
+then :
+  have_fuse_lowlevel=yes
+	   { printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: yes" >&5
+printf "%s\n" "yes" >&6; }
+else case e in #(
+  e) { printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: no" >&5
+printf "%s\n" "no" >&6; } ;;
+esac
+fi
+rm -f core conftest.err conftest.$ac_objext conftest.beam \
+    conftest$ac_exeext conftest.$ac_ext
+fi
+if test -n "$have_fuse_lowlevel"
+then
+
+printf "%s\n" "#define HAVE_FUSE_LOWLEVEL 1" >>confdefs.h
+
+fi
+
 FUSE2FS_CMT=
 # Check whether --enable-fuse2fs was given.
 if test ${enable_fuse2fs+y}
@@ -14668,6 +14715,73 @@ printf "%s\n" "Enabling fuse2fs by default" >&6; }
 	else
 		{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: Disabling fuse2fs by default" >&5
 printf "%s\n" "Disabling fuse2fs by default" >&6; }
+	fi
+
+ ;;
+esac
+fi
+
+
+
+FUSE4FS_CMT=
+# Check whether --enable-fuse4fs was given.
+if test ${enable_fuse4fs+y}
+then :
+  enableval=$enable_fuse4fs;
+	if test "$enableval" = "no"
+	then
+		FUSE4FS_CMT="#"
+		{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: Disabling fuse4fs" >&5
+printf "%s\n" "Disabling fuse4fs" >&6; }
+	else
+		cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+#ifdef __linux__
+	#include <linux/fs.h>
+	#include <linux/falloc.h>
+	#include <linux/xattr.h>
+	#endif
+
+int
+main (void)
+{
+
+  ;
+  return 0;
+}
+_ACEOF
+if ac_fn_c_try_cpp "$LINENO"
+then :
+
+else case e in #(
+  e) { { printf "%s\n" "$as_me:${as_lineno-$LINENO}: error: in '$ac_pwd':" >&5
+printf "%s\n" "$as_me: error: in '$ac_pwd':" >&2;}
+as_fn_error $? "Cannot find fuse4fs Linux headers
+See 'config.log' for more details" "$LINENO" 5; } ;;
+esac
+fi
+rm -f conftest.err conftest.i conftest.$ac_ext
+
+		if test -z "$have_fuse_lowlevel"
+		then
+			{ { printf "%s\n" "$as_me:${as_lineno-$LINENO}: error: in '$ac_pwd':" >&5
+printf "%s\n" "$as_me: error: in '$ac_pwd':" >&2;}
+as_fn_error $? "Cannot find fuse lowlevel library.
+See 'config.log' for more details" "$LINENO" 5; }
+		fi
+		{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: Enabling fuse4fs" >&5
+printf "%s\n" "Enabling fuse4fs" >&6; }
+	fi
+
+else case e in #(
+  e)
+	if test -n "$have_fuse_lowlevel"
+	then
+		{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: Enabling fuse4fs by default" >&5
+printf "%s\n" "Enabling fuse4fs by default" >&6; }
+	else
+		{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: Disabling fuse4fs by default" >&5
+printf "%s\n" "Disabling fuse4fs by default" >&6; }
 	fi
 
  ;;
@@ -16441,7 +16555,7 @@ for i in MCONFIG Makefile \
 	misc/Makefile ext2ed/Makefile e2fsck/Makefile \
 	debugfs/Makefile tests/Makefile tests/progs/Makefile \
 	tests/fuzz/Makefile resize/Makefile doc/Makefile \
-	po/Makefile.in scrub/Makefile; do
+	po/Makefile.in scrub/Makefile fuse4fs/Makefile; do
 	if test -d `dirname ${srcdir}/$i` ; then
 		outlist="$outlist $i"
 	fi
