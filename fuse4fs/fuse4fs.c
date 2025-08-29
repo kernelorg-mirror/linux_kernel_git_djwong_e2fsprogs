@@ -49,6 +49,9 @@
 #ifdef HAVE_FUSE_SERVICE
 # include <sys/mount.h>
 # include <fuse_service.h>
+# ifdef HAVE_SETPROCTITLE
+#  include <bsd/unistd.h>
+# endif
 #endif
 #ifdef __SET_FOB_FOR_FUSE
 # undef _FILE_OFFSET_BITS
@@ -1443,8 +1446,22 @@ static int fuse4fs_service_connect(struct fuse4fs *ff, struct fuse_args *args)
 
 	if (fuse4fs_is_service(ff))
 		fuse_service_append_args(ff->service, args);
-
 	return 0;
+}
+
+static void fuse4fs_service_set_proc_cmdline(struct fuse4fs *ff, int argc,
+					     char *argv[],
+					     struct fuse_args *args)
+{
+	char *cmdline;
+
+	setproctitle_init(argc, argv, environ);
+	cmdline = fuse_service_cmdline(argc, argv, args);
+	if (!cmdline)
+		return;
+
+	setproctitle("-%s", cmdline);
+	free(cmdline);
 }
 
 static inline int
@@ -1592,6 +1609,7 @@ static int fuse4fs_service(struct fuse4fs *ff, struct fuse_session *se,
 }
 #else
 # define fuse4fs_service_connect(...)		(0)
+# define fuse4fs_service_set_proc_cmdline(...)	((void)0)
 # define fuse4fs_service_parse_cmdline(...)	(EOPNOTSUPP)
 # define fuse4fs_service_release(...)		((void)0)
 # define fuse4fs_service_close_bdev(...)	((void)0)
@@ -8376,6 +8394,9 @@ int main(int argc, char *argv[])
 		fprintf(stderr, "Could not connect to service socket!\n");
 		exit(1);
 	}
+
+	if (fuse4fs_is_service(&fctx))
+		fuse4fs_service_set_proc_cmdline(&fctx, argc, argv, &args);
 
 	ret = fuse_opt_parse(&args, &fctx, fuse4fs_opts, fuse4fs_opt_proc);
 	if (ret)

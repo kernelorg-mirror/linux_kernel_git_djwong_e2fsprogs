@@ -1598,6 +1598,30 @@ AS_HELP_STRING([--disable-fuse4fs],[do not build fuse4fs]),
 AC_SUBST(FUSE4FS_CMT)
 
 dnl
+dnl see if setproctitle exists
+dnl
+AC_CHECK_LIB(bsd, setproctitle, [LIBBSD_LIB=-lbsd])
+AC_SUBST(LIBBSD_LIB)
+if test "$ac_cv_lib_bsd_setproctitle" = yes ; then
+	AC_DEFINE(HAVE_SETPROCTITLE, 1, Define to 1 if setproctitle])
+fi
+
+dnl AC_LINK_IFELSE(
+dnl [	AC_LANG_PROGRAM([[
+dnl #define _GNU_SOURCE
+dnl #include <bsd/unistd.h>
+dnl 	]], [[
+dnl setproctitle_init(argc, argv, environ);
+dnl setproctitle("-What sourcery is this???");
+dnl 	]])
+dnl ], have_setproctitle=yes
+dnl    AC_MSG_RESULT(yes),
+dnl    AC_MSG_RESULT(no))
+dnl if test "$setproctitle" = yes; then
+dnl   AC_DEFINE(HAVE_SETPROCTITLE, 1, [Define to 1 if setproctitle exists])
+dnl fi
+
+dnl
 dnl see if PR_SET_IO_FLUSHER exists
 dnl
 AC_MSG_CHECKING(for PR_SET_IO_FLUSHER)
