@@ -361,6 +361,9 @@
 /* Define to 1 if you have the `setmntent' function. */
 #undef HAVE_SETMNTENT
 
+/* Define to 1 if setproctitle */
+#undef HAVE_SETPROCTITLE
+
 /* Define to 1 if you have the `setresgid' function. */
 #undef HAVE_SETRESGID
 
