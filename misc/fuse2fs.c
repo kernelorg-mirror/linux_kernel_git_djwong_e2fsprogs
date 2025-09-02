@@ -4905,8 +4905,10 @@ out:
 	}
 	if (global_fs) {
 		err = ext2fs_close(global_fs);
-		if (err)
+		if (err) {
 			com_err(argv[0], err, "while closing fs");
+			ext2fs_free(global_fs);
+		}
 		global_fs = NULL;
 	}
 	if (fctx.lockfile) {
