@@ -1584,7 +1584,7 @@ static void *op_init(struct fuse_conn_info *conn,
 }
 
 static int fuse2fs_stat(struct fuse2fs *ff, ext2_ino_t ino,
-			struct stat *statbuf)
+			struct stat *statbuf, unsigned int *iflags)
 {
 	struct ext2_inode_large inode;
 	ext2_filsys fs = ff->fs;
@@ -1641,6 +1641,7 @@ static int fuse2fs_stat(struct fuse2fs *ff, ext2_ino_t ino,
 			statbuf->st_rdev = inode.i_block[1];
 	}
 
+	*iflags = inode.i_flags;
 	return ret;
 }
 
@@ -1675,10 +1676,10 @@ static int __fuse2fs_file_ino(struct fuse2fs *ff, const char *path,
 # define fuse2fs_file_ino(ff, path, fp, inop) \
 	__fuse2fs_file_ino((ff), (path), (fp), (inop), __func__, __LINE__)
 
-static int op_getattr(const char *path, struct stat *statbuf,
-		      struct fuse_file_info *fi)
+static int fuse2fs_getattr(struct fuse2fs *ff, const char *path,
+			   struct stat *statbuf, struct fuse_file_info *fi,
+			   unsigned int *iflags)
 {
-	struct fuse2fs *ff = fuse2fs_get();
 	ext2_ino_t ino;
 	int ret = 0;
 
@@ -1687,10 +1688,19 @@ static int op_getattr(const char *path, struct stat *statbuf,
 	ret = fuse2fs_file_ino(ff, path, fi, &ino);
 	if (ret)
 		goto out;
-	ret = fuse2fs_stat(ff, ino, statbuf);
+	ret = fuse2fs_stat(ff, ino, statbuf, iflags);
 out:
 	fuse2fs_finish(ff, ret);
 	return ret;
+}
+
+static int op_getattr(const char *path, struct stat *statbuf,
+		      struct fuse_file_info *fi)
+{
+	struct fuse2fs *ff = fuse2fs_get();
+	unsigned int dontcare;
+
+	return fuse2fs_getattr(ff, path, statbuf, fi, &dontcare);
 }
 
 #if FUSE_VERSION >= FUSE_MAKE_VERSION(3, 99)
@@ -1698,10 +1708,20 @@ static int op_getattr_iflags(const char *path, struct stat *statbuf,
 			     unsigned int *iflags, struct fuse_file_info *fi)
 {
 	struct fuse2fs *ff = fuse2fs_get();
-	int ret = op_getattr(path, statbuf, fi);
+	unsigned int i_flags;
+	int ret = fuse2fs_getattr(ff, path, statbuf, fi, &i_flags);
 
 	if (ret)
 		return ret;
+
+	if (i_flags & EXT2_IMMUTABLE_FL)
+		*iflags |= FUSE_IFLAG_IMMUTABLE;
+
+	if (i_flags & EXT2_SYNC_FL)
+		*iflags |= FUSE_IFLAG_SYNC;
+
+	if (i_flags & EXT2_APPEND_FL)
+		*iflags |= FUSE_IFLAG_APPEND;
 
 	if (fuse_fs_can_enable_iomap(statbuf)) {
 		*iflags |= FUSE_IFLAG_IOMAP;
@@ -3415,12 +3435,13 @@ static int fuse2fs_punch_posteof(struct fuse2fs *ff, ext2_ino_t ino,
 static int fuse2fs_file_uses_iomap(struct fuse2fs *ff, ext2_ino_t ino)
 {
 	struct stat statbuf;
+	unsigned int dontcare;
 	int ret;
 
 	if (!fuse2fs_iomap_enabled(ff))
 		return 0;
 
-	ret = fuse2fs_stat(ff, ino, &statbuf);
+	ret = fuse2fs_stat(ff, ino, &statbuf, &dontcare);
 	if (ret)
 		return ret;
 
@@ -4322,7 +4343,9 @@ static int op_readdir_iter(ext2_ino_t dir EXT2FS_ATTR((unused)),
 			(unsigned long long)i->dirpos);
 
 	if (i->flags == FUSE_READDIR_PLUS) {
-		ret = fuse2fs_stat(i->ff, dirent->inode, &stat);
+		unsigned int dontcare;
+
+		ret = fuse2fs_stat(i->ff, dirent->inode, &stat, &dontcare);
 		if (ret)
 			return DIRENT_ABORT;
 	}

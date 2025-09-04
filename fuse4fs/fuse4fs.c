@@ -1800,6 +1800,16 @@ static int fuse4fs_stat_inode(struct fuse4fs *ff, ext2_ino_t ino,
 	entry->entry_timeout = FUSE4FS_ATTR_TIMEOUT;
 
 	fstat->iflags = 0;
+
+	if (inodep->i_flags & EXT2_SYNC_FL)
+		fstat->iflags |= FUSE_IFLAG_SYNC;
+
+	if (inodep->i_flags & EXT2_IMMUTABLE_FL)
+		fstat->iflags |= FUSE_IFLAG_IMMUTABLE;
+
+	if (inodep->i_flags & EXT2_APPEND_FL)
+		fstat->iflags |= FUSE_IFLAG_APPEND;
+
 #ifdef HAVE_FUSE_IOMAP
 	if (fuse4fs_iomap_enabled(ff)) {
 		fstat->iflags |= FUSE_IFLAG_IOMAP;
