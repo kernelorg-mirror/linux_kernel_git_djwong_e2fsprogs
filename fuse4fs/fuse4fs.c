@@ -1635,9 +1635,26 @@ static int fuse4fs_service_configure_iomap(struct fuse4fs *ff)
 
 	return 0;
 }
+
+int fuse4fs_service_set_bdev_blocksize(struct fuse4fs *ff, int dev_index)
+{
+	int ret;
+
+	ret = fuse_lowlevel_iomap_backing_set_blocksize(ff->fuse, dev_index,
+							ff->fs->blocksize);
+	if (ret) {
+		err_printf(ff, "%s: cannot set blocksize %u: %s\n", __func__,
+			   ff->fs->blocksize, strerror(-ret));
+		return -EIO;
+	}
+
+	return 0;
+}
 #else
 # define fuse4fs_service_configure_iomap(...)	(EOPNOTSUPP)
+# define fuse4fs_service_set_bdev_blocksize(...) (EOPNOTSUPP)
 #endif
+
 
 static errcode_t fuse4fs_acquire_lockfile(struct fuse4fs *ff)
 {
@@ -7021,10 +7038,6 @@ static int fuse4fs_iomap_config_devices(struct fuse4fs *ff)
 	if (err)
 		return translate_error(ff->fs, 0, err);
 
-	ret = fuse4fs_set_bdev_blocksize(ff, fd);
-	if (ret)
-		return ret;
-
 	dev_index = fuse_lowlevel_iomap_device_add(ff->fuse, fd, 0);
 	if (dev_index < 0) {
 		dbg_printf(ff, "%s: cannot register iomap dev fd=%d, err=%d\n",
@@ -7034,6 +7047,13 @@ static int fuse4fs_iomap_config_devices(struct fuse4fs *ff)
 
 	dbg_printf(ff, "%s: registered iomap dev fd=%d iomap_dev=%u\n",
 		   __func__, fd, dev_index);
+
+	if (fuse4fs_is_service(ff))
+		ret = fuse4fs_service_set_bdev_blocksize(ff, dev_index);
+	else
+		ret = fuse4fs_set_bdev_blocksize(ff, fd);
+	if (ret)
+		return ret;
 
 	ff->iomap_dev = dev_index;
 	return 0;
