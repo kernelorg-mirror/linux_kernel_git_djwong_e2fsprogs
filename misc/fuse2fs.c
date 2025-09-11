@@ -1856,10 +1856,6 @@ static inline bool fuse2fs_wants_iomap(struct fuse2fs *ff)
 static void fuse2fs_iomap_enable(struct fuse_conn_info *conn,
 				 struct fuse2fs *ff)
 {
-	/* Don't let anyone touch iomap until the end of the patchset. */
-	ff->iomap_state = IOMAP_DISABLED;
-	return;
-
 	if (fuse2fs_wants_iomap(ff) &&
 	    fuse_set_feature_flag(conn, FUSE_CAP_IOMAP))
 		ff->iomap_state = IOMAP_ENABLED;
