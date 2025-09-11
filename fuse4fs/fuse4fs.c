@@ -1890,10 +1890,6 @@ static inline int fuse_set_feature_flag(struct fuse_conn_info *conn,
 static void fuse4fs_iomap_enable(struct fuse_conn_info *conn,
 				 struct fuse4fs *ff)
 {
-	/* Don't let anyone touch iomap until the end of the patchset. */
-	ff->iomap_state = IOMAP_DISABLED;
-	return;
-
 	/* iomap only works with block devices */
 	if (ff->iomap_state != IOMAP_DISABLED && fuse4fs_on_bdev(ff) &&
 	    fuse_set_feature_flag(conn, FUSE_CAP_IOMAP))
