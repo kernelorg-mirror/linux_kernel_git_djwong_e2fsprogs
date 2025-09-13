@@ -218,3 +218,7 @@ errcode_t ext2fs_remove_exit_fn(ext2_exit_fn fn, void *data);
         (sizeof(array) / sizeof(array[0]))
 
 #define EXT2FS_BUILD_BUG_ON(cond) ((void)sizeof(char[1 - 2*!!(cond)]))
+
+#ifndef _WIN32
+int possible_unixfd_pathname(const char *path);
+#endif

@@ -225,6 +225,7 @@ typedef struct ext2_file *ext2_file_t;
  * Internal flags for use by the ext2fs library only
  */
 #define EXT2_FLAG2_USE_FAKE_TIME	0x000000001
+#define EXT2_FLAG2_MMP_USE_IOCHANNEL	0x000000002
 
 /*
  * Special flag in the ext2 inode i_flag field that means that this is
