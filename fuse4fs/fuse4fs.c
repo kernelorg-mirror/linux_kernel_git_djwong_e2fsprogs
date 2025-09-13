@@ -123,7 +123,8 @@
 #endif
 #endif /* !defined(ENODATA) */
 
-#define FUSE4FS_ATTR_TIMEOUT	(0.0)
+#define FUSE4FS_IOMAP_ATTR_TIMEOUT	(0.0)
+#define FUSE4FS_ATTR_TIMEOUT		(30.0)
 
 static inline uint64_t round_up(uint64_t b, unsigned int align)
 {
@@ -2158,8 +2159,14 @@ static int fuse4fs_stat_inode(struct fuse4fs *ff, ext2_ino_t ino,
 
 	fuse4fs_ino_to_fuse(ff, &entry->ino, ino);
 	entry->generation = inodep->i_generation;
-	entry->attr_timeout = FUSE4FS_ATTR_TIMEOUT;
-	entry->entry_timeout = FUSE4FS_ATTR_TIMEOUT;
+
+	if (fuse4fs_iomap_enabled(ff)) {
+		entry->attr_timeout = FUSE4FS_IOMAP_ATTR_TIMEOUT;
+		entry->entry_timeout = FUSE4FS_IOMAP_ATTR_TIMEOUT;
+	} else {
+		entry->attr_timeout = FUSE4FS_ATTR_TIMEOUT;
+		entry->entry_timeout = FUSE4FS_ATTR_TIMEOUT;
+	}
 
 	fstat->iflags = 0;
 
@@ -2392,6 +2399,8 @@ out:
 	fuse4fs_finish(ff, ret);
 	if (ret)
 		fuse_reply_err(req, -ret);
+	else if (fuse4fs_iomap_enabled(ff))
+		fuse_reply_statx(req, 0, &stx, FUSE4FS_IOMAP_ATTR_TIMEOUT);
 	else
 		fuse_reply_statx(req, 0, &stx, FUSE4FS_ATTR_TIMEOUT);
 }
