@@ -26,6 +26,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <limits.h>
 
 #include "ext2fs/ext2_fs.h"
 #include "ext2fs/ext2fs.h"
@@ -40,6 +41,49 @@
 #pragma GCC diagnostic ignored "-Wunused-parameter"
 #endif
 #endif
+
+static int ext2fs_mmp_open_device(ext2_filsys fs, int flags)
+{
+	struct stat st;
+	char *endptr = NULL;
+	long maybe_fd;
+	int new_fd;
+	int want_directio = 1;
+	int ret;
+
+	/*
+	 * If the device name is only a number, then most likely the unixfd IO
+	 * manager is in use here.  Try to extract the fd number; if we can't,
+	 * then fall back to regular open.
+	 */
+	errno = 0;
+	maybe_fd = strtol(fs->device_name, &endptr, 10);
+	if (errno || endptr != fs->device_name + strlen(fs->device_name))
+		return open(fs->device_name, flags);
+
+	if (maybe_fd < 0 || maybe_fd > INT_MAX)
+		return -1;
+
+	/* Skip directio if this is a regular file, just like below */
+	ret = fstat(maybe_fd, &st);
+	if (ret == 0 && S_ISREG(st.st_mode))
+		want_directio = 0;
+
+	/* Duplicate the fd so that the MMP code can close it later */
+	new_fd = dup(maybe_fd);
+	if (new_fd < 0)
+		return -1;
+
+	if (want_directio) {
+		ret = fcntl(new_fd, F_SETFL, O_DIRECT);
+		if (ret) {
+			close(new_fd);
+			return -1;
+		}
+	}
+
+	return new_fd;
+}
 
 errcode_t ext2fs_mmp_read(ext2_filsys fs, blk64_t mmp_blk, void *buf)
 {
@@ -70,7 +114,7 @@ errcode_t ext2fs_mmp_read(ext2_filsys fs, blk64_t mmp_blk, void *buf)
 		    S_ISREG(st.st_mode))
 			flags &= ~O_DIRECT;
 
-		fs->mmp_fd = open(fs->device_name, flags);
+		fs->mmp_fd = ext2fs_mmp_open_device(fs, flags);
 		if (fs->mmp_fd < 0) {
 			retval = EXT2_ET_MMP_OPEN_DIRECT;
 			goto out;
