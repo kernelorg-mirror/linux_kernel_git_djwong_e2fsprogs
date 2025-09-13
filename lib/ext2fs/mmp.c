@@ -26,6 +26,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <limits.h>
 
 #include "ext2fs/ext2_fs.h"
 #include "ext2fs/ext2fs.h"
@@ -46,6 +47,74 @@ errcode_t ext2fs_mmp_get_mem(ext2_filsys fs, void **ptr)
 	int align = ext2fs_get_dio_alignment(fs->mmp_fd);
 
 	return ext2fs_get_memalign(fs->blocksize, align, ptr);
+}
+
+static int possibly_unixfd(ext2_filsys fs)
+{
+	char *endptr = NULL;
+
+	if (fs->io->manager == unixfd_io_manager)
+		return 1;
+
+	/*
+	 * Due to the possibility of stacking IO managers, it's possible that
+	 * there's a unixfd IO manager under all of this.  We can guess the
+	 * presence of one if the device_name is a string representation of an
+	 * integer (fd) number.
+	 */
+	errno = 0;
+	strtol(fs->device_name, &endptr, 10);
+	return !errno && endptr == fs->device_name + strlen(fs->device_name);
+}
+
+static int ext2fs_mmp_open_device(ext2_filsys fs, int flags)
+{
+	struct stat st;
+	int maybe_fd = -1;
+	int new_fd;
+	int want_directio = 1;
+	int ret;
+	errcode_t retval = 0;
+
+	/*
+	 * If the unixfd IO manager is in use, extract the fd number from the
+	 * unixfd IO manager so we can reuse it below.
+	 *
+	 * If that fails, fall back to opening the filesystem device, which is
+	 * the preferred method.
+	 */
+	if (possibly_unixfd(fs))
+		retval = io_channel_get_fd(fs->io, &maybe_fd);
+	if (retval || maybe_fd < 0)
+		return open(fs->device_name, flags);
+
+	/*
+	 * We extracted the fd from the unixfd IO manager.  Skip directio if
+	 * this is a regular file, just ext2fs_mmp_read does.
+	 */
+	ret = fstat(maybe_fd, &st);
+	if (ret == 0 && S_ISREG(st.st_mode))
+		want_directio = 0;
+
+	/* Duplicate the fd so that the MMP code can close it later */
+	new_fd = dup(maybe_fd);
+	if (new_fd < 0)
+		return -1;
+
+	/* Make sure we actually got directio if that's required */
+	if (want_directio) {
+		ret = fcntl(new_fd, F_GETFL);
+		if (ret < 0 || !(ret & O_DIRECT))
+			return -1;
+	}
+
+	/*
+	 * The MMP fd is a duplicate of the io channel fd, so we must use that
+	 * for all MMP block accesses because the two fds share the same file
+	 * position and O_DIRECT state.
+	 */
+	fs->flags2 |= EXT2_FLAG2_MMP_USE_IOCHANNEL;
+	return new_fd;
 }
 
 errcode_t ext2fs_mmp_read(ext2_filsys fs, blk64_t mmp_blk, void *buf)
@@ -77,7 +146,7 @@ errcode_t ext2fs_mmp_read(ext2_filsys fs, blk64_t mmp_blk, void *buf)
 		    S_ISREG(st.st_mode))
 			flags &= ~O_DIRECT;
 
-		fs->mmp_fd = open(fs->device_name, flags);
+		fs->mmp_fd = ext2fs_mmp_open_device(fs, flags);
 		if (fs->mmp_fd < 0) {
 			retval = EXT2_ET_MMP_OPEN_DIRECT;
 			goto out;
@@ -88,6 +157,15 @@ errcode_t ext2fs_mmp_read(ext2_filsys fs, blk64_t mmp_blk, void *buf)
 		retval = ext2fs_mmp_get_mem(fs, &fs->mmp_cmp);
 		if (retval)
 			return retval;
+	}
+
+	if (fs->flags2 & EXT2_FLAG2_MMP_USE_IOCHANNEL) {
+		retval = io_channel_read_blk64(fs->io, mmp_blk, -fs->blocksize,
+					       fs->mmp_cmp);
+		if (retval)
+			return retval;
+
+		goto read_compare;
 	}
 
 	if ((blk64_t) ext2fs_llseek(fs->mmp_fd, mmp_blk * fs->blocksize,
@@ -102,6 +180,7 @@ errcode_t ext2fs_mmp_read(ext2_filsys fs, blk64_t mmp_blk, void *buf)
 		goto out;
 	}
 
+read_compare:
 	mmp_cmp = fs->mmp_cmp;
 
 	if (!(fs->flags & EXT2_FLAG_IGNORE_CSUM_ERRORS) &&
@@ -428,6 +507,7 @@ errcode_t ext2fs_mmp_stop(ext2_filsys fs)
 
 mmp_error:
 	if (fs->mmp_fd > 0) {
+		fs->flags2 &= ~EXT2_FLAG2_MMP_USE_IOCHANNEL;
 		close(fs->mmp_fd);
 		fs->mmp_fd = -1;
 	}
