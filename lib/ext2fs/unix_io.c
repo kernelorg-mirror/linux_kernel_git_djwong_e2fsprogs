@@ -1152,7 +1152,7 @@ cleanup:
 #define DEV_FD_PATH	"/dev/fd/"
 #define DEV_FD_PATHLEN	(sizeof(DEV_FD_PATH) - 1)
 
-static int possible_unixfd_pathname(const char *path)
+int possible_unixfd_pathname(const char *path)
 {
 	return strncmp(DEV_FD_PATH, path, DEV_FD_PATHLEN) == 0;
 }
