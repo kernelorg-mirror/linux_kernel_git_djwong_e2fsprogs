@@ -12,6 +12,7 @@ export LC_ALL ?= C
 
 ifeq ($(DEB_HOST_ARCH_OS), hurd)
 SKIP_FUSE2FS=yes
+SKIP_FUSE4FS=yes
 endif
 
 ifeq ($(DEB_HOST_ARCH_OS), linux)
@@ -21,6 +22,9 @@ endif
 
 ifneq ($(filter pkg.e2fsprogs.no-fuse2fs,$(DEB_BUILD_PROFILES)),)
 SKIP_FUSE2FS=yes
+endif
+ifneq ($(filter pkg.e2fsprogs.no-fuse4fs,$(DEB_BUILD_PROFILES)),)
+SKIP_FUSE4FS=yes
 endif
 
 ifneq (,$(filter-out parallel=1,$(filter parallel=%,$(DEB_BUILD_OPTIONS))))
@@ -59,6 +63,9 @@ COMMON_CONF_FLAGS = --enable-elf-shlibs --disable-ubsan \
 
 ifneq ($(SKIP_FUSE2FS),)
 COMMON_CONF_FLAGS +=  --disable-fuse2fs
+endif
+ifneq ($(SKIP_FUSE4FS),)
+COMMON_CONF_FLAGS +=  --disable-fuse4fs
 endif
 
 ifneq ($(DEB_BUILD_GNU_TYPE),$(DEB_HOST_GNU_TYPE))
@@ -188,6 +195,10 @@ ifeq (,$(filter noudeb,$(DEB_BUILD_PROFILES)))
 endif
 ifeq ($(SKIP_FUSE2FS),)
 	dh_shlibdeps -pfuse2fs -l${stdbuilddir}/lib \
+		-- -Ldebian/e2fsprogs.shlibs.local
+endif
+ifeq ($(SKIP_FUSE4FS),)
+	dh_shlibdeps -pfuse4fs -l${stdbuilddir}/lib \
 		-- -Ldebian/e2fsprogs.shlibs.local
 endif
 	dh_shlibdeps --remaining-packages -l${stdbuilddir}/lib
