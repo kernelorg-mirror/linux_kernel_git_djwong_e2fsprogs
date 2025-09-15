@@ -1366,18 +1366,48 @@ dnl Check to see if librt is required for clock_gettime() (glibc < 2.17)
 dnl
 AC_CHECK_LIB(rt, clock_gettime, [CLOCK_GETTIME_LIB=-lrt])
 AC_SUBST(CLOCK_GETTIME_LIB)
+
 dnl
 dnl Check to see if the FUSE library is -lfuse3 or -losxfuse
 dnl
-FUSE_CMT=
 FUSE_LIB=
 dnl osxfuse.dylib supersedes fuselib.dylib
+PKG_CHECK_MODULES([fuse3], [fuse3], [FUSE_LIB=-lfuse3],
+[
+	AC_CHECK_LIB(osxfuse, fuse_main, [FUSE_LIB=-losxfuse])
+])
+AC_SUBST(FUSE_LIB)
+
+dnl
+dnl Set FUSE_USE_VERSION, which is how fuse servers build against a particular
+dnl libfuse ABI.  Currently we link against the libfuse 3.14 ABI (hence 314)
+dnl
+if test -n "$FUSE_LIB"
+then
+	FUSE_USE_VERSION=314
+	CFLAGS="$fuse3_CFLAGS $CFLAGS"
+	FUSE_LIB="$fuse3_LIBS"
+	AC_CHECK_HEADERS([pthread.h fuse.h], [],
+		[AC_MSG_FAILURE([Cannot build against fuse3 headers])],
+[#define _FILE_OFFSET_BITS	64
+#define FUSE_USE_VERSION	314])
+fi
+if test -n "$FUSE_USE_VERSION"
+then
+	AC_DEFINE_UNQUOTED(FUSE_USE_VERSION, $FUSE_USE_VERSION,
+		[Define to the version of FUSE to use])
+fi
+
+dnl
+dnl Check if fuse2fs is actually built.
+dnl
+FUSE2FS_CMT=
 AC_ARG_ENABLE([fuse2fs],
 AS_HELP_STRING([--disable-fuse2fs],[do not build fuse2fs]),
 [
 	if test "$enableval" = "no"
 	then
-		FUSE_CMT="#"
+		FUSE2FS_CMT="#"
 		AC_MSG_RESULT([Disabling fuse2fs])
 	else
 		AC_PREPROC_IFELSE(
@@ -1386,49 +1416,24 @@ AS_HELP_STRING([--disable-fuse2fs],[do not build fuse2fs]),
 	#include <linux/falloc.h>
 	#include <linux/xattr.h>
 	#endif
-	]], [])], [], [AC_MSG_FAILURE([Cannot find fuse2fs Linux headers.])])
+	]], [])], [], [AC_MSG_FAILURE([Cannot find fuse2fs Linux headers])])
 
-		PKG_CHECK_MODULES([fuse3], [fuse3], [FUSE_LIB=-lfuse3],
-		[
-			AC_CHECK_LIB(osxfuse, fuse_main, [FUSE_LIB=-losxfuse],
-				[AC_MSG_FAILURE([Cannot find fuse library.])])
-		])
+		if test -z "$FUSE_USE_VERSION"
+		then
+			AC_MSG_FAILURE([Cannot find fuse library.])
+		fi
 		AC_MSG_RESULT([Enabling fuse2fs])
 	fi
 ], [
-	PKG_CHECK_MODULES([fuse3], [fuse3], [FUSE_LIB=-lfuse3],
-	[
-		AC_CHECK_LIB(osxfuse, fuse_main, [FUSE_LIB=-losxfuse],
-			[FUSE_CMT="#"])
-	])
-	if test -z "$FUSE_CMT"
+	if test -n "$FUSE_USE_VERSION"
 	then
-		AC_MSG_RESULT([Enabling fuse2fs by default.])
+		AC_MSG_RESULT([Enabling fuse2fs by default])
+	else
+		AC_MSG_RESULT([Disabling fuse2fs by default])
 	fi
 ]
 )
-AC_SUBST(FUSE_LIB)
-AC_SUBST(FUSE_CMT)
-if test -n "$FUSE_LIB"
-then
-	FUSE_USE_VERSION=314
-	CFLAGS="$fuse3_CFLAGS $CFLAGS"
-	FUSE_LIB="$fuse3_LIBS"
-	AC_CHECK_HEADERS([pthread.h fuse.h], [],
-		[AC_MSG_FAILURE([Cannot find fuse3 fuse2fs headers.])],
-[#define _FILE_OFFSET_BITS	64
-#define FUSE_USE_VERSION 314
-#ifdef __linux__
-#include <linux/fs.h>
-#include <linux/falloc.h>
-#include <linux/xattr.h>
-#endif])
-fi
-if test -n "$FUSE_USE_VERSION"
-then
-	AC_DEFINE_UNQUOTED(FUSE_USE_VERSION, $FUSE_USE_VERSION,
-		[Define to the version of FUSE to use])
-fi
+AC_SUBST(FUSE2FS_CMT)
 
 dnl
 dnl Check if the FUSE cache_readdir flag is supported
