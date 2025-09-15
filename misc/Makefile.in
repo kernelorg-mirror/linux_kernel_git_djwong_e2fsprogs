@@ -34,7 +34,7 @@ MKDIR_P = @MKDIR_P@
 @BLKID_CMT@FINDFS_LINK= findfs
 @BLKID_CMT@FINDFS_MAN= findfs.8
 
-@FUSE_CMT@FUSE_PROG= fuse2fs
+@FUSE2FS_CMT@FUSE2FS_PROG= fuse2fs
 
 SPROGS=		mke2fs badblocks tune2fs dumpe2fs $(BLKID_PROG) logsave \
 			$(E2IMAGE_PROG) @FSCK_PROG@ e2undo
@@ -47,9 +47,9 @@ SMANPAGES=	tune2fs.8 mklost+found.8 mke2fs.8 dumpe2fs.8 badblocks.8 \
 			e2mmpstatus.8
 FMANPAGES=	mke2fs.conf.5 ext4.5
 
-UPROGS=		chattr lsattr $(FUSE_PROG) @UUID_CMT@ uuidgen
+UPROGS=		chattr lsattr $(FUSE2FS_PROG) @UUID_CMT@ uuidgen
 UMANPAGES=	chattr.1 lsattr.1 @UUID_CMT@ uuidgen.1
-UMANPAGES+=	@FUSE_CMT@ fuse2fs.1
+UMANPAGES+=	@FUSE2FS_CMT@ fuse2fs.1
 
 LPROGS=		@E2INITRD_PROG@
 
