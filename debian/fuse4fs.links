@@ -1,0 +1,3 @@
+/usr/bin/fuse4fs          /usr/bin/ext4
+/usr/bin/fuse4fs          /usr/bin/ext3
+/usr/bin/fuse4fs          /usr/bin/ext2
