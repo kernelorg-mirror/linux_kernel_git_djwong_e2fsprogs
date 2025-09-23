@@ -25,6 +25,9 @@
 #include <sys/ioctl.h>
 #include <unistd.h>
 #include <ctype.h>
+#ifdef HAVE_FUSE_LOOPDEV
+# include <fuse_loopdev.h>
+#endif
 #define FUSE_DARWIN_ENABLE_EXTENSIONS 0
 #ifdef __SET_FOB_FOR_FUSE
 # error Do not set magic value __SET_FOB_FOR_FUSE!!!!
@@ -244,6 +247,10 @@ struct fuse2fs {
 	pthread_mutex_t bfl;
 	char *device;
 	char *shortdev;
+#ifdef HAVE_FUSE_LOOPDEV
+	char *loop_device;
+	int loop_fd;
+#endif
 
 	/* options set by fuse_opt_parse must be of type int */
 	int ro;
@@ -267,6 +274,7 @@ struct fuse2fs {
 	enum fuse2fs_feature_toggle iomap_want;
 	enum fuse2fs_iomap_state iomap_state;
 	uint32_t iomap_dev;
+	uint64_t iomap_cap;
 #endif
 	unsigned int blockmask;
 	unsigned long offset;
@@ -724,9 +732,23 @@ static inline int fuse2fs_iomap_enabled(const struct fuse2fs *ff)
 {
 	return ff->iomap_state >= IOMAP_ENABLED;
 }
+
+static inline void fuse2fs_discover_iomap(struct fuse2fs *ff)
+{
+	if (ff->iomap_want == FT_DISABLE)
+		return;
+
+	ff->iomap_cap = fuse_lowlevel_discover_iomap(-1);
+}
+
+static inline bool fuse2fs_can_iomap(const struct fuse2fs *ff)
+{
+	return ff->iomap_cap & FUSE_IOMAP_SUPPORT_FILEIO;
+}
 #else
 # define fuse2fs_iomap_enabled(...)	(0)
-# define fuse2fs_iomap_enabled(...)	(0)
+# define fuse2fs_discover_iomap(...)	((void)0)
+# define fuse2fs_can_iomap(...)		(false)
 #endif
 
 static inline void fuse2fs_dump_extents(struct fuse2fs *ff, ext2_ino_t ino,
@@ -1200,6 +1222,73 @@ static void fuse2fs_release_lockfile(struct fuse2fs *ff)
 	free(ff->lockfile);
 }
 
+#ifdef HAVE_FUSE_LOOPDEV
+static int fuse2fs_try_losetup(struct fuse2fs *ff, int flags)
+{
+	bool rw = flags & EXT2_FLAG_RW;
+	int dev_fd;
+	int ret;
+
+	/* Only transform a regular file into a loopdev for iomap */
+	if (!fuse2fs_can_iomap(ff))
+		return 0;
+
+	/* open the actual target device, see if it's a regular file */
+	dev_fd = open(ff->device, rw ? O_RDWR : O_RDONLY);
+	if (dev_fd < 0) {
+		err_printf(ff, "%s: %s\n", _("while opening fs"),
+			   error_message(errno));
+		return -1;
+	}
+
+	ret = fuse_loopdev_setup(dev_fd, rw ? O_RDWR : O_RDONLY, ff->device, 5,
+				 &ff->loop_fd, &ff->loop_device);
+	if (ret == -EBUSY) {
+		/*
+		 * If the setup function returned EBUSY, there is already a
+		 * loop device backed by this file.  Report that the file is
+		 * already in use.  Ignore the other errors because we can
+		 * otherwise handle filesystem in a file.
+		 */
+		err_printf(ff, "%s: %s\n", _("while opening fs loopdev"),
+				   error_message(-ret));
+		close(dev_fd);
+		return -1;
+	}
+
+	close(dev_fd);
+	return 0;
+}
+
+static void fuse2fs_detach_losetup(struct fuse2fs *ff)
+{
+	if (ff->loop_fd >= 0)
+		close(ff->loop_fd);
+	ff->loop_fd = -1;
+}
+
+static void fuse2fs_undo_losetup(struct fuse2fs *ff)
+{
+	fuse2fs_detach_losetup(ff);
+	free(ff->loop_device);
+	ff->loop_device = NULL;
+}
+
+static inline const char *fuse2fs_device(const struct fuse2fs *ff)
+{
+	/*
+	 * If we created a loop device for the file passed in, open that.
+	 * Otherwise open the path the user gave us.
+	 */
+	return ff->loop_device ? ff->loop_device : ff->device;
+}
+#else
+# define fuse2fs_try_losetup(...)	(0)
+# define fuse2fs_detach_losetup(...)	((void)0)
+# define fuse2fs_undo_losetup(...)	((void)0)
+# define fuse2fs_device(ff)		((ff)->device)
+#endif
+
 static void fuse2fs_unmount(struct fuse2fs *ff)
 {
 	char uuid[UUID_STR_SIZE];
@@ -1217,6 +1306,8 @@ static void fuse2fs_unmount(struct fuse2fs *ff)
 				   uuid);
 	}
 
+	fuse2fs_undo_losetup(ff);
+
 	if (ff->lockfile)
 		fuse2fs_release_lockfile(ff);
 }
@@ -1229,6 +1320,8 @@ static errcode_t fuse2fs_open(struct fuse2fs *ff)
 		    EXT2_FLAG_EXCLUSIVE | EXT2_FLAG_WRITE_FULL_SUPER;
 	errcode_t err;
 
+	fuse2fs_discover_iomap(ff);
+
 	if (ff->lockfile) {
 		err = fuse2fs_acquire_lockfile(ff);
 		if (err)
@@ -1240,6 +1333,12 @@ static errcode_t fuse2fs_open(struct fuse2fs *ff)
 
 	if (ff->directio)
 		flags |= EXT2_FLAG_DIRECT_IO;
+
+	dbg_printf(ff, "opening with flags=0x%x\n", flags);
+
+	err = fuse2fs_try_losetup(ff, flags);
+	if (err)
+		return err;
 
 	/*
 	 * If the filesystem is stored on a block device, the _EXCLUSIVE flag
@@ -1272,7 +1371,7 @@ static errcode_t fuse2fs_open(struct fuse2fs *ff)
 	 */
 	deadline = init_deadline(FUSE2FS_OPEN_TIMEOUT);
 	do {
-		err = ext2fs_open2(ff->device, options, flags, 0, 0,
+		err = ext2fs_open2(fuse2fs_device(ff), options, flags, 0, 0,
 				   unix_io_manager, &ff->fs);
 		if ((err == EPERM || err == EACCES) &&
 		    (!ff->ro || (flags & EXT2_FLAG_RW))) {
@@ -1286,6 +1385,11 @@ static errcode_t fuse2fs_open(struct fuse2fs *ff)
  _("WARNING: source write-protected, mounted read-only."));
 			flags &= ~EXT2_FLAG_RW;
 			ff->ro = 1;
+
+			fuse2fs_undo_losetup(ff);
+			err = fuse2fs_try_losetup(ff, flags);
+			if (err)
+				return err;
 
 			/* Force the loop to run once more */
 			err = -1;
@@ -1735,6 +1839,8 @@ static void *op_init(struct fuse_conn_info *conn,
 	if (ff->debug)
 		cfg->debug = 1;
 	cfg->nullpath_ok = 1;
+
+	fuse2fs_detach_losetup(ff);
 
 	if (ff->opstate == F2OP_WRITABLE)
 		fuse2fs_read_bitmaps(ff);
@@ -6844,6 +6950,9 @@ int main(int argc, char *argv[])
 		.iomap_want = FT_DEFAULT,
 		.iomap_state = IOMAP_UNKNOWN,
 		.iomap_dev = FUSE_IOMAP_DEV_NULL,
+#endif
+#ifdef HAVE_FUSE_LOOPDEV
+		.loop_fd = -1,
 #endif
 	};
 	errcode_t err;
