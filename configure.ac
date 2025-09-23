@@ -1433,6 +1433,29 @@ then
 fi
 
 dnl
+dnl Check if fuse library has fuse_loopdev.h, which it only gained after adding
+dnl iomap support.
+dnl
+if test -n "$have_fuse_iomap"; then
+	AC_MSG_CHECKING(for fuse_loopdev.h in libfuse)
+	AC_LINK_IFELSE(
+	[	AC_LANG_PROGRAM([[
+	#define _GNU_SOURCE
+	#define _FILE_OFFSET_BITS	64
+	#define FUSE_USE_VERSION	399
+	#include <fuse_loopdev.h>
+		]], [[
+		]])
+	], have_fuse_loopdev=yes
+	   AC_MSG_RESULT(yes),
+	   AC_MSG_RESULT(no))
+fi
+if test -n "$have_fuse_loopdev"
+then
+	AC_DEFINE(HAVE_FUSE_LOOPDEV, 1, [Define to 1 if fuse supports loopdev operations])
+fi
+
+dnl
 dnl Check if the FUSE lowlevel library is supported
 dnl
 have_fuse_lowlevel=
