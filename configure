@@ -14679,6 +14679,47 @@ printf "%s\n" "#define HAVE_FUSE_IOMAP 1" >>confdefs.h
 
 fi
 
+if test -n "$have_fuse_iomap"; then
+	{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking for fuse_loopdev.h in libfuse" >&5
+printf %s "checking for fuse_loopdev.h in libfuse... " >&6; }
+	cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+
+	#define _GNU_SOURCE
+	#define _FILE_OFFSET_BITS	64
+	#define FUSE_USE_VERSION	399
+	#include <fuse_loopdev.h>
+
+int
+main (void)
+{
+
+
+  ;
+  return 0;
+}
+
+_ACEOF
+if ac_fn_c_try_link "$LINENO"
+then :
+  have_fuse_loopdev=yes
+	   { printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: yes" >&5
+printf "%s\n" "yes" >&6; }
+else case e in #(
+  e) { printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: no" >&5
+printf "%s\n" "no" >&6; } ;;
+esac
+fi
+rm -f core conftest.err conftest.$ac_objext conftest.beam \
+    conftest$ac_exeext conftest.$ac_ext
+fi
+if test -n "$have_fuse_loopdev"
+then
+
+printf "%s\n" "#define HAVE_FUSE_LOOPDEV 1" >>confdefs.h
+
+fi
+
 have_fuse_lowlevel=
 if test -n "$FUSE_USE_VERSION"
 then

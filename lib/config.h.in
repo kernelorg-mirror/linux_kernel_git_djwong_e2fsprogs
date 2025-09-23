@@ -148,6 +148,9 @@
 /* Define to 1 if fuse supports iomap */
 #undef HAVE_FUSE_IOMAP
 
+/* Define to 1 if fuse supports loopdev operations */
+#undef HAVE_FUSE_LOOPDEV
+
 /* Define to 1 if fuse supports lowlevel API */
 #undef HAVE_FUSE_LOWLEVEL
 
