@@ -1313,7 +1313,7 @@ static int fuse4fs_service_get_config(struct fuse4fs *ff)
 
 retry:
 	ret = fuse_service_request_file(ff->service, ff->device, open_flags,
-					0);
+					0, FUSE_SERVICE_REQUEST_FILE_TRYLOOP);
 	if (ret)
 		return ret;
 
