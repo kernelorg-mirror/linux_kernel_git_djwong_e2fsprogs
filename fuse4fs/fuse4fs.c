@@ -1516,13 +1516,20 @@ static int fuse4fs_service_get_config(struct fuse4fs *ff)
 {
 	double deadline = init_deadline(FUSE4FS_OPEN_TIMEOUT);
 	const int open_flags = O_EXCL | (ff->directio ? O_DIRECT : 0);
+	unsigned int request_flags = 0;
 	int open_mode = O_RDWR;
 	int fd;
 	int ret;
 
+#ifdef HAVE_FUSE_IOMAP
+	if (fuse4fs_can_iomap(ff))
+		request_flags |= FUSE_SERVICE_REQUEST_FILE_TRYLOOP;
+#endif
+
 	do {
 		ret = fuse_service_request_file(ff->service, ff->device,
-						open_mode | open_flags, 0, 0);
+						open_mode | open_flags, 0,
+						request_flags);
 		if (ret)
 			return ret;
 
