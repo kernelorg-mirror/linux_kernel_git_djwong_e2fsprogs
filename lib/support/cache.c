@@ -97,6 +97,24 @@ cache_set_maxcount(
 	pthread_mutex_unlock(&cache->c_mutex);
 }
 
+int
+cache_set_flag(
+	struct cache		*cache,
+	int			flags)
+{
+	cache->c_flags |= (flags & CACHE_FLAGS_ALL);
+	return 0;
+}
+
+int
+cache_clear_flag(
+	struct cache		*cache,
+	int			flags)
+{
+	cache->c_flags &= ~flags;
+	return 0;
+}
+
 static void
 cache_expand(
 	struct cache *		cache)
