@@ -16,6 +16,8 @@
  */
 #define CACHE_MISCOMPARE_PURGE	(1 << 0)
 
+#define CACHE_FLAGS_ALL		(CACHE_MISCOMPARE_PURGE)
+
 /*
  * cache object campare return values
  */
@@ -145,6 +147,8 @@ void cache_purge(struct cache *);
 bool cache_flush(struct cache *cache);
 
 void cache_set_maxcount(struct cache *cache, unsigned int maxcount);
+int cache_set_flag(struct cache *cache, int flags);
+int cache_clear_flag(struct cache *cache, int flags);
 
 /* don't allocate a new node */
 #define CACHE_GET_INCORE	(1U << 0)
