@@ -144,6 +144,8 @@ void cache_walk(struct cache *cache, cache_walk_t fn, void *data);
 void cache_purge(struct cache *);
 bool cache_flush(struct cache *cache);
 
+void cache_set_maxcount(struct cache *cache, unsigned int maxcount);
+
 /* don't allocate a new node */
 #define CACHE_GET_INCORE	(1U << 0)
 int cache_node_get(struct cache *c, cache_key_t key, unsigned int cgflags,
