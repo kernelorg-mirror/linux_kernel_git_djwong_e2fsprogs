@@ -87,6 +87,16 @@ cache_init(
 	return 0;
 }
 
+void
+cache_set_maxcount(
+	struct cache		*cache,
+	unsigned int		maxcount)
+{
+	pthread_mutex_lock(&cache->c_mutex);
+	cache->c_maxcount = maxcount;
+	pthread_mutex_unlock(&cache->c_mutex);
+}
+
 static void
 cache_expand(
 	struct cache *		cache)
