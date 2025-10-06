@@ -241,6 +241,11 @@ struct fuse2fs {
 	unsigned int next_generation;
 	unsigned long long cache_size;
 	char *lockfile;
+#ifdef CONFIG_MMP
+	uint8_t mmp_running;
+	unsigned int mmp_update_interval;
+	pthread_t mmp_tid;
+#endif
 };
 
 #define FUSE2FS_CHECK_MAGIC(fs, ptr, num) do {if ((ptr)->magic != (num)) \
@@ -416,6 +421,134 @@ static inline errcode_t fuse2fs_write_inode(ext2_filsys fs, ext2_ino_t ino,
 	return ext2fs_write_inode_full(fs, ino, EXT2_INODE(inode),
 				       sizeof(*inode));
 }
+
+#ifdef CONFIG_MMP
+static bool fuse2fs_mmp_active(const struct fuse2fs *ff)
+{
+	ext2_filsys fs = ff->fs;
+
+	if (!ext2fs_has_feature_mmp(fs->super) ||
+	    !(fs->flags & EXT2_FLAG_RW) || (fs->flags & EXT2_FLAG_SKIP_MMP))
+		return false;
+	return true;
+}
+
+static int fuse2fs_mmp_touch(struct fuse2fs *ff, bool immediate)
+{
+	ext2_filsys fs = ff->fs;
+	struct mmp_struct *mmp = fs->mmp_buf;
+	struct mmp_struct *mmp_cmp = fs->mmp_cmp;
+	struct timeval tv;
+	errcode_t retval = 0;
+
+	if (!fuse2fs_mmp_active(ff))
+		return 0;
+
+	gettimeofday(&tv, 0);
+	if (!immediate &&
+	    tv.tv_sec - fs->mmp_last_written < ff->mmp_update_interval)
+		return 0;
+
+	retval = ext2fs_mmp_read(fs, fs->super->s_mmp_block, NULL);
+	if (retval)
+		return translate_error(fs, 0, retval);
+
+	if (memcmp(mmp, mmp_cmp, sizeof(*mmp_cmp)))
+		return translate_error(fs, 0, EXT2_ET_MMP_CHANGE_ABORT);
+
+	/*
+	 * Believe it or not, ext2fs_mmp_read actually overwrites fs->mmp_cmp
+	 * and leaves fs->mmp_buf untouched.  Hence we copy mmp_cmp into
+	 * mmp_buf, update mmp_buf, and write mmp_buf out to disk.
+	 */
+	memcpy(mmp, mmp_cmp, sizeof(*mmp_cmp));
+	mmp->mmp_time = tv.tv_sec;
+	mmp->mmp_seq = ext2fs_mmp_new_seq();
+
+	retval = ext2fs_mmp_write(fs, fs->super->s_mmp_block, fs->mmp_buf);
+	if (retval)
+		return translate_error(fs, 0, retval);
+
+	return 0;
+}
+
+static void *fuse2fs_mmp_thread(void *arg)
+{
+	struct fuse2fs *ff = arg;
+
+	pthread_setname_np(pthread_self(), "fuse2fs_mmp");
+
+	while (ff->mmp_update_interval) {
+		fuse2fs_mmp_touch(ff, false);
+		sleep(ff->mmp_update_interval);
+	}
+
+	return NULL;
+}
+
+static void fuse2fs_mmp_start(struct fuse2fs *ff)
+{
+	int error;
+
+	if (!ff->mmp_update_interval)
+		return;
+
+	error = pthread_create(&ff->mmp_tid, NULL, fuse2fs_mmp_thread, ff);
+	if (error) {
+		err_printf(ff, "could not create MMP thread: %s\n",
+			   strerror(error));
+		return;
+	}
+
+	ff->mmp_running = 1;
+}
+
+static void fuse2fs_mmp_stop(struct fuse2fs *ff)
+{
+	if (ff->mmp_running) {
+		ff->mmp_running = 0;
+		pthread_cancel(ff->mmp_tid);
+		pthread_join(ff->mmp_tid, NULL);
+	}
+}
+
+static void fuse2fs_mmp_config(struct fuse2fs *ff)
+{
+	ext2_filsys fs = ff->fs;
+	struct mmp_struct *mmp_s = fs->mmp_buf;
+	unsigned int mmp_update_interval = fs->super->s_mmp_update_interval;
+
+	if (!fuse2fs_mmp_active(ff))
+		return;
+
+	/*
+	 * If update_interval in MMP block is larger, use that instead of
+	 * update_interval from the superblock.
+	 */
+	if (mmp_s->mmp_check_interval > mmp_update_interval)
+		mmp_update_interval = mmp_s->mmp_check_interval;
+
+	/* Clamp to the relevant(?) interval values */
+	if (mmp_update_interval < EXT4_MMP_MIN_CHECK_INTERVAL)
+		mmp_update_interval = EXT4_MMP_MIN_CHECK_INTERVAL;
+	if (mmp_update_interval > EXT4_MMP_MAX_UPDATE_INTERVAL)
+		mmp_update_interval = EXT4_MMP_MAX_UPDATE_INTERVAL;
+
+	ff->mmp_update_interval = mmp_update_interval;
+
+	/*
+	 * libext2fs writes EXT4_MMP_SEQ_FSCK after mounting, so we need to
+	 * update it immediately so that it doesn't look like another node is
+	 * actually running fsck.
+	 */
+	fuse2fs_mmp_touch(ff, true);
+}
+#else
+# define fuse2fs_mmp_touch(...)		(0)
+# define fuse2fs_mmp_start(...)		((void)0)
+# define fuse2fs_mmp_stop(...)		((void)0)
+# define fuse2fs_mmp_config(...)	((void)0)
+#endif
 
 static void get_now(struct timespec *now)
 {
@@ -1002,6 +1135,13 @@ static void *op_init(struct fuse_conn_info *conn
 
 	if (global_fs->flags & EXT2_FLAG_RW)
 		fuse2fs_read_bitmaps(ff);
+
+	/*
+	 * Background threads must be started from op_init because libfuse
+	 * might daemonize us in fuse_main() by forking and execing, which
+	 * kills any background threads.
+	 */
+	fuse2fs_mmp_start(ff);
 
 	return ff;
 }
@@ -5073,6 +5213,8 @@ int main(int argc, char *argv[])
 	fctx.blocklog = u_log2(fctx.fs->blocksize);
 	fctx.blockmask = fctx.fs->blocksize - 1;
 
+	fuse2fs_mmp_config(&fctx);
+
 	if (!fctx.cache_size)
 		fctx.cache_size = default_cache_size();
 	if (fctx.cache_size) {
@@ -5270,6 +5412,8 @@ out:
 		fflush(orig_stderr);
 	}
 	if (global_fs) {
+		fuse2fs_mmp_stop(&fctx);
+
 		err = ext2fs_close_free(&global_fs);
 		if (err)
 			com_err(argv[0], err, "while closing fs");
@@ -5455,6 +5599,7 @@ static int __translate_error(ext2_filsys fs, ext2_ino_t ino, errcode_t err,
 		if (fs->flags & EXT2_FLAG_RW)
 			err_printf(ff, "%s\n",
  _("Remounting read-only due to errors."));
+		fuse2fs_mmp_stop(ff);
 		fs->flags &= ~EXT2_FLAG_RW;
 		break;
 	case EXT2_ERRORS_PANIC:
