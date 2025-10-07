@@ -22,6 +22,7 @@ OBJS=		cstring.o \
 		print_fs_flags.o \
 		profile_helpers.o \
 		prof_err.o \
+		psi.o \
 		quotaio.o \
 		quotaio_v2.o \
 		quotaio_tree.o \
@@ -38,6 +39,7 @@ SRCS=		$(srcdir)/argv_parse.c \
 		$(srcdir)/profile.c \
 		$(srcdir)/profile_helpers.c \
 		prof_err.c \
+		$(srcdir)/psi.c \
 		$(srcdir)/quotaio.c \
 		$(srcdir)/quotaio_tree.c \
 		$(srcdir)/quotaio_v2.c \
@@ -191,3 +193,5 @@ cache.o: $(srcdir)/cache.c $(top_builddir)/lib/config.h \
  $(srcdir)/cache.h $(srcdir)/list.h $(srcdir)/xbitops.h
 iocache.o: $(srcdir)/iocache.c $(top_builddir)/lib/config.h \
  $(srcdir)/iocache.h $(srcdir)/cache.h $(srcdir)/list.h $(srcdir)/xbitops.h
+psi.o: $(srcdir)/psi.c $(top_builddir)/lib/config.h \
+ $(srcdir)/psi.h $(srcdir)/list.h $(srcdir)/xbitops.h
