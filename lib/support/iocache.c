@@ -452,6 +452,20 @@ static errcode_t iocache_set_option(io_channel channel, const char *option,
 	if (!strcmp(option, "cache"))
 		return 0;
 
+	if (!strcmp(option, "cache_auto_shrink")) {
+		if (!arg)
+			return EXT2_ET_INVALID_ARGUMENT;
+		if (!strcmp(arg, "on")) {
+			cache_set_flag(&data->cache, CACHE_AUTO_SHRINK);
+			return 0;
+		}
+		if (!strcmp(arg, "off")) {
+			cache_clear_flag(&data->cache, CACHE_AUTO_SHRINK);
+			return 0;
+		}
+		return EXT2_ET_INVALID_ARGUMENT;
+	}
+
 	if (!strcmp(option, "cache_blocks")) {
 		long long size;
 
@@ -464,6 +478,11 @@ static errcode_t iocache_set_option(io_channel channel, const char *option,
 			return EXT2_ET_INVALID_ARGUMENT;
 
 		cache_set_maxcount(&data->cache, size);
+		return 0;
+	}
+
+	if (!strcmp(option, "cache_shrink")) {
+		cache_shrink(&data->cache);
 		return 0;
 	}
 
