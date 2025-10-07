@@ -55,6 +55,7 @@
 #include "support/list.h"
 #include "support/cache.h"
 #include "support/iocache.h"
+#include "support/psi.h"
 
 #include "../version.h"
 #include "uuid/uuid.h"
@@ -305,6 +306,8 @@ struct fuse2fs {
 	/* options set by fuse_opt_parse must be of type int */
 	int timing;
 #endif
+	struct psi *mem_psi;
+	struct psi_handler *mem_psi_handler;
 };
 
 #define FUSE2FS_CHECK_HANDLE(ff, fh) \
@@ -1338,6 +1341,11 @@ static void fuse2fs_unmount(struct fuse2fs *ff)
 	if (ff->fs) {
 		fuse2fs_mmp_stop(ff);
 
+		if (psi_active(ff->mem_psi)) {
+			psi_del_handler(ff->mem_psi, &ff->mem_psi_handler);
+			psi_stop_thread(ff->mem_psi);
+		}
+
 		uuid_unparse(ff->fs->super->s_uuid, uuid);
 		err = ext2fs_close_free(&ff->fs);
 		if (err)
@@ -1441,6 +1449,11 @@ static errcode_t fuse2fs_config_cache(struct fuse2fs *ff)
 			   ff->cache_size >> 10,
 			   error_message(err));
 		return err;
+	}
+
+	if (psi_active(ff->mem_psi)) {
+		snprintf(buf, sizeof(buf), "cache_auto_shrink=off");
+		err = io_channel_set_options(ff->fs->io, buf);
 	}
 
 	return 0;
@@ -1803,6 +1816,8 @@ static void *op_init(struct fuse_conn_info *conn,
 	 * kills any background threads.
 	 */
 	fuse2fs_mmp_start(ff);
+	if (psi_active(ff->mem_psi))
+		psi_start_thread(ff->mem_psi);
 
 #if FUSE_VERSION >= FUSE_MAKE_VERSION(3, 17)
 	/*
@@ -7281,6 +7296,20 @@ static void fuse2fs_com_err_proc(const char *whoami, errcode_t code,
 	fflush(stderr);
 }
 
+static void fuse2fs_memory_stall(unsigned int reasons, void *data)
+{
+	struct fuse2fs *ff = data;
+	ext2_filsys fs;
+	errcode_t retval;
+
+	fs = fuse2fs_start(ff);
+	retval = io_channel_set_options(fs->io, "cache_shrink");
+	fuse2fs_finish(ff, 0);
+	if (retval)
+		err_printf(ff, "psi memory reclaim: %s\n",
+			   error_message(retval));
+}
+
 int main(int argc, char *argv[])
 {
 	struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
@@ -7361,6 +7390,25 @@ int main(int argc, char *argv[])
 		}
 	}
 #endif
+
+	/*
+	 * Activate when there are memory stalls for 200ms every 2s; or
+	 * 5min goes by.  Unprivileged processes can only use 2s windows.
+	 */
+	err = psi_create(PSI_MEMORY, PSI_TRIM_HEAP, 20100, 2000000,
+			 5 * 60 * 1000000, &fctx.mem_psi);
+	if (err) {
+		switch (errno) {
+		case ENOENT:
+		case EINVAL:
+		case EACCES:
+		case EPERM:
+			break;
+		default:
+			ret = 32;
+			goto out;
+		}
+	}
 
 	/* Will we allow users to allocate every last block? */
 	if (getenv("FUSE2FS_ALLOC_ALL_BLOCKS")) {
@@ -7463,6 +7511,15 @@ int main(int argc, char *argv[])
 		fflush(stdout);
 	}
 
+	if (psi_active(fctx.mem_psi)) {
+		err = psi_add_handler(fctx.mem_psi, fuse2fs_memory_stall,
+				      &fctx, &fctx.mem_psi_handler);
+		if (err) {
+			ret = 32;
+			goto out;
+		}
+	}
+
 	pthread_mutex_init(&fctx.bfl, NULL);
 	ret = fuse_main(args.argc, args.argv, &fs_ops, &fctx);
 	pthread_mutex_destroy(&fctx.bfl);
@@ -7502,6 +7559,8 @@ out:
 		fflush(orig_stderr);
 	}
 	fuse2fs_unmount(&fctx);
+	if (psi_active(fctx.mem_psi))
+		psi_destroy(&fctx.mem_psi);
 	reset_com_err_hook();
 	err_shortdev = NULL;
 	if (fctx.device)
