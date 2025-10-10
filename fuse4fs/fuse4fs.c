@@ -327,6 +327,8 @@ struct fuse4fs {
 	char *svc_cmdline;
 	int bdev_fd;
 	int fusedev_fd;
+	int psi_sys_mem_fd;
+	int psi_cgroup_mem_fd;
 #endif
 	struct psi *mem_psi;
 	struct psi_handler *mem_psi_handler;
@@ -939,8 +941,16 @@ static int fuse4fs_psi_config(struct fuse4fs *ff)
 	 * Activate when there are memory stalls for 200ms every 2s; or
 	 * 5min goes by.  Unprivileged processes can only use 2s windows.
 	 */
-	err = psi_create(PSI_MEMORY, PSI_TRIM_HEAP, 20100, 2000000,
-			 5 * 60 * 1000000, &ff->mem_psi);
+#ifdef HAVE_FUSE_SERVICE
+	if (fuse4fs_is_service(ff))
+		err = psi_create_from(PSI_MEMORY, PSI_TRIM_HEAP, 202002,
+				      2000000, 5 * 60 * 1000000,
+				      &ff->psi_sys_mem_fd,
+				      &ff->psi_cgroup_mem_fd, &ff->mem_psi);
+	else
+#endif
+		err = psi_create(PSI_MEMORY, PSI_TRIM_HEAP, 202002, 2000000,
+				 5 * 60 * 1000000, &ff->mem_psi);
 	if (err) {
 		switch (errno) {
 		case ENOENT:
@@ -1564,6 +1574,14 @@ static int fuse4fs_service_finish(struct fuse4fs *ff, int ret)
 	close(ff->bdev_fd);
 	ff->bdev_fd = -1;
 
+	if (ff->psi_sys_mem_fd >= 0)
+		close(ff->psi_sys_mem_fd);
+	ff->psi_sys_mem_fd = -1;
+
+	if (ff->psi_cgroup_mem_fd >= 0)
+		close(ff->psi_cgroup_mem_fd);
+	ff->psi_cgroup_mem_fd = -1;
+
 	/*
 	 * If we're being run as a service, the return code must fit the LSB
 	 * init script action error guidelines, which is to say that we
@@ -1583,6 +1601,49 @@ static int fuse4fs_service_finish(struct fuse4fs *ff, int ret)
 	if (ret != EXIT_SUCCESS)
 		return EXIT_FAILURE;
 	return EXIT_SUCCESS;
+}
+
+/* Open PSI control files */
+static int fuse_service_open_psi_controls(struct fuse4fs *ff)
+{
+	const char *psifile = psi_system_path(PSI_MEMORY);
+	char cgpath[PATH_MAX];
+	ssize_t cgpathlen;
+	int ret;
+
+	ret = fuse_service_request_file(ff->service, psifile, PSI_OPEN_FLAGS,
+					0, 0);
+	if (ret)
+		return ret;
+
+	ret = fuse_service_receive_file(ff->service, psifile,
+					&ff->psi_sys_mem_fd);
+	if (ret)
+		return ret;
+	if (ff->psi_sys_mem_fd < 0)
+		err_printf(ff, "%s %s: %s.\n",
+			   _("opening system memory pressure monitor"),
+			   psifile, strerror(errno));
+
+	cgpathlen = psi_cgroup_path(PSI_MEMORY, cgpath, sizeof(cgpath));
+	if (!cgpathlen || cgpathlen >= sizeof(cgpath))
+		return 0;
+
+	ret = fuse_service_request_file(ff->service, cgpath, PSI_OPEN_FLAGS,
+					0, 0);
+	if (ret)
+		return ret;
+
+	ret = fuse_service_receive_file(ff->service, cgpath,
+					&ff->psi_cgroup_mem_fd);
+	if (ret)
+		return ret;
+	if (ff->psi_cgroup_mem_fd < 0)
+		err_printf(ff, "%s %s: %s.\n",
+			   _("opening cgroup memory pressure monitor"),
+			   cgpath, strerror(errno));
+
+	return 0;
 }
 
 static int fuse4fs_service_get_config(struct fuse4fs *ff)
@@ -1619,6 +1680,10 @@ static int fuse4fs_service_get_config(struct fuse4fs *ff)
 			   strerror(errno));
 		return -1;
 	}
+
+	ret = fuse_service_open_psi_controls(ff);
+	if (ret)
+		return ret;
 
 	ret = fuse_service_finish_file_requests(ff->service);
 	if (ret)
@@ -8550,6 +8615,8 @@ int main(int argc, char *argv[])
 #ifdef HAVE_FUSE_SERVICE
 		.bdev_fd = -1,
 		.fusedev_fd = -1,
+		.psi_sys_mem_fd = -1,
+		.psi_cgroup_mem_fd = -1,
 #endif
 	};
 	errcode_t err;
