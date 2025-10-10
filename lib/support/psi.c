@@ -45,7 +45,7 @@ struct psi {
 	int thread_running:1;
 };
 
-static const char *psi_system_path(enum psi_type type)
+char *psi_system_path(enum psi_type type)
 {
 	switch (type) {
 	case PSI_MEMORY:
@@ -274,7 +274,7 @@ void psi_destroy(struct psi **psip)
 
 static int psi_open_control(const char *path)
 {
-	return open(path, O_RDWR | O_NONBLOCK);
+	return open(path, PSI_OPEN_FLAGS);
 }
 
 static void psi_open_system_control(struct psi *psi)
@@ -283,7 +283,7 @@ static void psi_open_system_control(struct psi *psi)
 	psi->system_fd = psi_open_control(psi_system_path(psi->type));
 }
 
-static ssize_t psi_cgroup_path(enum psi_type type, char *path, size_t pathsize)
+ssize_t psi_cgroup_path(enum psi_type type, char *path, size_t pathsize)
 {
 	char cgpath[PATH_MAX];
 	char *p = cgpath;
@@ -437,6 +437,53 @@ int psi_create(enum psi_type type, unsigned int psi_flags, uint64_t stall_us,
 
 	psi_open_system_control(psi);
 	psi_open_cgroup_control(psi);
+
+	if (psi->system_fd < 0 && psi->cgroup_fd < 0 && !psi->timeout_us) {
+		errno = ENOENT;
+		goto out_fds;
+	}
+
+	ret = psi_config_fd(psi, psi->system_fd, stall_us, window_us);
+	if (ret)
+		goto out_fds;
+
+	ret = psi_config_fd(psi, psi->cgroup_fd, stall_us, window_us);
+	if (ret)
+		goto out_fds;
+
+	*psip = psi;
+	return 0;
+
+out_fds:
+	psi_destroy(&psi);
+	return -1;
+}
+
+/*
+ * Same as psi_create, but you can specify the whole-system and per-cgroup
+ * monitoring fds.
+ */
+int psi_create_from(enum psi_type type, unsigned int psi_flags,
+		    uint64_t stall_us, uint64_t window_us, uint64_t timeout_us,
+		    int *system_fd, int *cgroup_fd, struct psi **psip)
+{
+	struct psi *psi;
+	int ret;
+
+	if (psi_flags & ~PSI_FLAGS) {
+		errno = EINVAL;
+		return -1;
+	}
+
+	psi = psi_alloc(type, psi_flags, timeout_us);
+	if (!psi)
+		return -1;
+
+	psi->system_fd = *system_fd;
+	psi->cgroup_fd = *cgroup_fd;
+
+	*system_fd = -1;
+	*cgroup_fd = -1;
 
 	if (psi->system_fd < 0 && psi->cgroup_fd < 0 && !psi->timeout_us) {
 		errno = ENOENT;
