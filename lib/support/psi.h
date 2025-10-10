@@ -54,4 +54,13 @@ static inline bool psi_active(struct psi *psi)
 	return psi != NULL;
 }
 
+char *psi_system_path(enum psi_type type);
+ssize_t psi_cgroup_path(enum psi_type type, char *path, size_t pathsize);
+
+#define PSI_OPEN_FLAGS (O_RDWR | O_NONBLOCK)
+
+int psi_create_from(enum psi_type type, unsigned int psi_flags,
+		    uint64_t stall_us, uint64_t window_us, uint64_t timeout_us,
+		    int *system_fd, int *cgroup_fd, struct psi **psip);
+
 #endif /* __PSI_H__ */
