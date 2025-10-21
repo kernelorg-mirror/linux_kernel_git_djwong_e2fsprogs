@@ -28,6 +28,7 @@
 #include <unistd.h>
 #include <ctype.h>
 #include <assert.h>
+#include <limits.h>
 #ifdef HAVE_FUSE_LOOPDEV
 # include <fuse_loopdev.h>
 #endif
@@ -332,6 +333,10 @@ struct fuse4fs {
 #endif
 	struct psi *mem_psi;
 	struct psi_handler *mem_psi_handler;
+
+	struct bthread *flush_thread;
+	unsigned int flush_interval;
+	double last_flush;
 };
 
 #ifdef HAVE_FUSE_SERVICE
@@ -1011,6 +1016,71 @@ fuse4fs_set_handle(struct fuse_file_info *fp, struct fuse4fs_file_handle *fh)
 {
 	fp->fh = (uintptr_t)fh;
 	fp->keep_cache = 1;
+}
+
+static errcode_t fuse4fs_flush(struct fuse4fs *ff, int flags)
+{
+	double last_flush = gettime_monotonic();
+	errcode_t err;
+
+	err = ext2fs_flush2(ff->fs, flags);
+	if (err)
+		return err;
+
+	ff->last_flush = last_flush;
+	return 0;
+}
+
+static inline int fuse4fs_flush_wanted(struct fuse4fs *ff)
+{
+	return ff->fs != NULL && ff->opstate == F4OP_WRITABLE &&
+	       ff->last_flush + ff->flush_interval <= gettime_monotonic();
+}
+
+static void fuse4fs_flush_bthread(void *data)
+{
+	struct fuse4fs *ff = data;
+	ext2_filsys fs;
+	errcode_t err;
+	int ret = 0;
+
+	fs = fuse4fs_start(ff);
+	if (fuse4fs_flush_wanted(ff) && !bthread_cancelled(ff->flush_thread)) {
+		err = fuse4fs_flush(ff, 0);
+		if (err)
+			ret = translate_error(fs, 0, err);
+	}
+	fuse4fs_finish(ff, ret);
+}
+
+static void fuse4fs_flush_start(struct fuse4fs *ff)
+{
+	int ret;
+
+	if (!ff->flush_interval)
+		return;
+
+	ret = bthread_create("fuse4fs_flush", fuse4fs_flush_bthread, ff,
+			     ff->flush_interval, &ff->flush_thread);
+	if (ret) {
+		err_printf(ff, "flusher: %s.\n", error_message(ret));
+		return;
+	}
+
+	ret = bthread_start(ff->flush_thread);
+	if (ret)
+		err_printf(ff, "flusher: %s.\n", error_message(ret));
+}
+
+static void fuse4fs_flush_cancel(struct fuse4fs *ff)
+{
+	if (ff->flush_thread)
+		bthread_cancel(ff->flush_thread);
+}
+
+static void fuse4fs_flush_destroy(struct fuse4fs *ff)
+{
+	bthread_destroy(&ff->flush_thread);
 }
 
 #ifdef HAVE_FUSE_IOMAP
@@ -2218,7 +2288,7 @@ static int fuse4fs_mount(struct fuse4fs *ff)
 		ext2fs_set_tstamp(fs->super, s_mtime, time(NULL));
 		fs->super->s_state &= ~EXT2_VALID_FS;
 		ext2fs_mark_super_dirty(fs);
-		err = ext2fs_flush2(fs, 0);
+		err = fuse4fs_flush(ff, 0);
 		if (err)
 			return translate_error(fs, 0, err);
 	}
@@ -2246,7 +2316,7 @@ static void op_destroy(void *userdata)
 		if (err)
 			translate_error(fs, 0, err);
 
-		err = ext2fs_flush2(fs, 0);
+		err = fuse4fs_flush(ff, 0);
 		if (err)
 			translate_error(fs, 0, err);
 	}
@@ -2269,6 +2339,7 @@ static void op_destroy(void *userdata)
 	 * that the block device will be released before umount(2) returns.
 	 */
 	if (ff->iomap_state == IOMAP_ENABLED) {
+		fuse4fs_flush_cancel(ff);
 		fuse4fs_mmp_cancel(ff);
 		fuse4fs_unmount(ff);
 	}
@@ -2486,6 +2557,7 @@ static void op_init(void *userdata, struct fuse_conn_info *conn)
 	 */
 	fuse4fs_mmp_start(ff);
 	fuse4fs_psi_start(ff);
+	fuse4fs_flush_start(ff);
 
 #if FUSE_VERSION >= FUSE_MAKE_VERSION(3, 17)
 	/*
@@ -3043,7 +3115,7 @@ static inline int fuse4fs_dirsync_flush(struct fuse4fs *ff, ext2_ino_t ino,
 		*flushed = 0;
 	return 0;
 flush:
-	err = ext2fs_flush2(fs, 0);
+	err = fuse4fs_flush(ff, 0);
 	if (err)
 		return translate_error(fs, 0, err);
 
@@ -4915,7 +4987,7 @@ static void op_release(fuse_req_t req, fuse_ino_t fino EXT2FS_ATTR((unused)),
 	if ((fp->flags & O_SYNC) &&
 	    fuse4fs_is_writeable(ff) &&
 	    (fh->open_flags & EXT2_FILE_WRITE)) {
-		err = ext2fs_flush2(fs, EXT2_FLAG_FLUSH_NO_SYNC);
+		err = fuse4fs_flush(ff, EXT2_FLAG_FLUSH_NO_SYNC);
 		if (err)
 			ret = translate_error(fs, fh->ino, err);
 	}
@@ -4946,7 +5018,7 @@ static void op_fsync(fuse_req_t req, fuse_ino_t fino EXT2FS_ATTR((unused)),
 	fs = fuse4fs_start(ff);
 	/* For now, flush everything, even if it's slow */
 	if (fuse4fs_is_writeable(ff) && fh->open_flags & EXT2_FILE_WRITE) {
-		err = ext2fs_flush2(fs, 0);
+		err = fuse4fs_flush(ff, 0);
 		if (err)
 			ret = translate_error(fs, fh->ino, err);
 	}
@@ -6273,6 +6345,7 @@ static int ioctl_shutdown(struct fuse4fs *ff, const struct fuse_ctx *ctxt,
 
 	err_printf(ff, "%s.\n", _("shut down requested"));
 
+	fuse4fs_flush_cancel(ff);
 	fuse4fs_mmp_cancel(ff);
 
 	/*
@@ -6281,7 +6354,7 @@ static int ioctl_shutdown(struct fuse4fs *ff, const struct fuse_ctx *ctxt,
 	 * any of the flags.  Flush whatever is dirty and shut down.
 	 */
 	if (ff->opstate == F4OP_WRITABLE)
-		ext2fs_flush2(fs, 0);
+		fuse4fs_flush(ff, 0);
 	ff->opstate = F4OP_SHUTDOWN;
 	fs->flags &= ~EXT2_FLAG_RW;
 
@@ -6696,7 +6769,7 @@ static void op_freezefs(fuse_req_t req, fuse_ino_t ino, uint64_t unlinked)
 			goto out_unlock;
 		}
 
-		err = ext2fs_flush2(fs, 0);
+		err = fuse4fs_flush(ff, 0);
 		if (err) {
 			ret = translate_error(fs, 0, err);
 			goto out_unlock;
@@ -6732,7 +6805,7 @@ static void op_unfreezefs(fuse_req_t req, fuse_ino_t ino)
 			goto out_unlock;
 		}
 
-		err = ext2fs_flush2(fs, 0);
+		err = fuse4fs_flush(ff, 0);
 		if (err) {
 			ret = translate_error(fs, 0, err);
 			goto out_unlock;
@@ -6776,7 +6849,7 @@ static void op_syncfs(fuse_req_t req, fuse_ino_t ino)
 			goto out_unlock;
 		}
 
-		err = ext2fs_flush2(fs, 0);
+		err = fuse4fs_flush(ff, 0);
 		if (err) {
 			ret = translate_error(fs, 0, err);
 			goto out_unlock;
@@ -8154,6 +8227,7 @@ enum {
 	FUSE4FS_CACHE_SIZE,
 	FUSE4FS_DIRSYNC,
 	FUSE4FS_ERRORS_BEHAVIOR,
+	FUSE4FS_FLUSH_INTERVAL,
 #ifdef HAVE_FUSE_IOMAP
 	FUSE4FS_IOMAP,
 	FUSE4FS_IOMAP_PASSTHROUGH,
@@ -8182,6 +8256,7 @@ static struct fuse_opt fuse4fs_opts[] = {
 #ifdef HAVE_CLOCK_MONOTONIC
 	FUSE4FS_OPT("timing",		timing,			1),
 #endif
+	FUSE_OPT_KEY("flush_interval=%s", FUSE4FS_FLUSH_INTERVAL),
 #ifdef HAVE_FUSE_IOMAP
 	FUSE4FS_OPT("iomap_cache",	iomap_cache,		1),
 	FUSE4FS_OPT("noiomap_cache",	iomap_cache,		0),
@@ -8265,6 +8340,21 @@ static int fuse4fs_opt_proc(void *data, const char *arg,
 
 		/* do not pass through to libfuse */
 		return 0;
+	case FUSE4FS_FLUSH_INTERVAL:
+		char *p;
+		unsigned long val;
+
+		errno = 0;
+		val = strtoul(arg + 15, &p, 0);
+		if (p != arg + strlen(arg) || errno || val > UINT_MAX) {
+			fprintf(stderr, "%s: %s.\n", arg,
+				_("Unrecognized flush interval"));
+			return -1;
+		}
+
+		/* do not pass through to libfuse */
+		ff->flush_interval = val;
+		return 0;
 #ifdef HAVE_FUSE_IOMAP
 	case FUSE4FS_IOMAP:
 		if (strcmp(arg, "iomap") == 0 || strcmp(arg + 6, "1") == 0)
@@ -8312,6 +8402,7 @@ static int fuse4fs_opt_proc(void *data, const char *arg,
 #ifdef HAVE_FUSE_IOMAP
 	"    -o iomap=              0 to disable iomap, 1 to enable iomap\n"
 #endif
+	"    -o flush=<time>        flush dirty metadata on this interval\n"
 	"\n",
 			outargs->argv[0]);
 		if (key == FUSE4FS_HELPFULL) {
@@ -8626,6 +8717,7 @@ int main(int argc, char *argv[])
 		.loop_fd = -1,
 #endif
 		.translate_inums = 1,
+		.flush_interval = 30,
 #ifdef HAVE_FUSE_SERVICE
 		.bdev_fd = -1,
 		.psi_sys_mem_fd = -1,
@@ -8809,6 +8901,7 @@ out:
  _("Mount failed while opening filesystem.  Check dmesg(1) for details."));
 		fflush(orig_stderr);
 	}
+	fuse4fs_flush_destroy(&fctx);
 	fuse4fs_psi_destroy(&fctx);
 	fuse4fs_mmp_destroy(&fctx);
 	fuse4fs_unmount(&fctx);
@@ -8989,6 +9082,7 @@ static int __translate_error(ext2_filsys fs, ext2_ino_t ino, errcode_t err,
  _("Remounting read-only due to errors."));
 			ff->opstate = F4OP_READONLY;
 		}
+		fuse4fs_flush_cancel(ff);
 		fuse4fs_mmp_cancel(ff);
 		fs->flags &= ~EXT2_FLAG_RW;
 		break;
