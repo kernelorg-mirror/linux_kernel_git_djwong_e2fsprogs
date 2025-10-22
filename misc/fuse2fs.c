@@ -222,6 +222,7 @@ struct fuse2fs_file_handle {
 
 enum fuse2fs_opstate {
 	F2OP_READONLY,
+	F2OP_WRITABLE_FROZEN,
 	F2OP_WRITABLE,
 	F2OP_SHUTDOWN,
 };
@@ -5700,6 +5701,86 @@ out:
 }
 #endif /* SUPPORT_FALLOCATE */
 
+#if FUSE_VERSION >= FUSE_MAKE_VERSION(3, 99)
+static int op_freezefs(const char *path, uint64_t unlinked)
+{
+	struct fuse2fs *ff = fuse2fs_get();
+	ext2_filsys fs;
+	errcode_t err;
+	int ret = 0;
+
+	FUSE2FS_CHECK_CONTEXT(ff);
+	fs = fuse2fs_start(ff);
+
+	if (ff->opstate == F2OP_WRITABLE) {
+		if (fs->super->s_error_count)
+			fs->super->s_state |= EXT2_ERROR_FS;
+		else if (!unlinked)
+			fs->super->s_state |= EXT2_VALID_FS;
+		ext2fs_mark_super_dirty(fs);
+		err = ext2fs_set_gdt_csum(fs);
+		if (err) {
+			ret = translate_error(fs, 0, err);
+			goto out_unlock;
+		}
+
+		err = ext2fs_flush2(fs, 0);
+		if (err) {
+			ret = translate_error(fs, 0, err);
+			goto out_unlock;
+		}
+
+		ff->opstate = F2OP_WRITABLE_FROZEN;
+	}
+
+out_unlock:
+	fs->super->s_state &= ~EXT2_VALID_FS;
+	fuse2fs_finish(ff, ret);
+	return ret;
+}
+
+static int op_unfreezefs(const char *path)
+{
+	struct fuse2fs *ff = fuse2fs_get();
+	ext2_filsys fs;
+	errcode_t err;
+	int ret = 0;
+
+	FUSE2FS_CHECK_CONTEXT(ff);
+	fs = fuse2fs_start(ff);
+
+	if (ff->opstate == F2OP_WRITABLE_FROZEN) {
+		if (fs->super->s_error_count)
+			fs->super->s_state |= EXT2_ERROR_FS;
+		ext2fs_mark_super_dirty(fs);
+		err = ext2fs_set_gdt_csum(fs);
+		if (err) {
+			ret = translate_error(fs, 0, err);
+			goto out_unlock;
+		}
+
+		err = ext2fs_flush2(fs, 0);
+		if (err) {
+			ret = translate_error(fs, 0, err);
+			goto out_unlock;
+		}
+
+		ff->opstate = F2OP_WRITABLE;
+	}
+
+out_unlock:
+	fuse2fs_finish(ff, ret);
+	return ret;
+}
+
+static int op_shutdownfs(const char *path, uint64_t flags)
+{
+	struct fuse2fs *ff = fuse2fs_get();
+
+	return ioctl_shutdown(ff, NULL, NULL);
+}
+#endif
+
 #ifdef HAVE_FUSE_IOMAP
 static void fuse2fs_iomap_hole(struct fuse2fs *ff, struct fuse_file_iomap *iomap,
 			       off_t pos, uint64_t count)
@@ -6984,6 +7065,9 @@ static struct fuse_operations fs_ops = {
 #endif
 #if FUSE_VERSION >= FUSE_MAKE_VERSION(3, 99)
 	.getattr_iflags = op_getattr_iflags,
+	.freezefs = op_freezefs,
+	.unfreezefs = op_unfreezefs,
+	.shutdownfs = op_shutdownfs,
 #endif
 #ifdef HAVE_FUSE_IOMAP
 	.iomap_begin = op_iomap_begin,
