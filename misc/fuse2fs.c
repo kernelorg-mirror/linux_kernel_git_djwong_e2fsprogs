@@ -56,6 +56,7 @@
 #include "support/list.h"
 #include "support/cache.h"
 #include "support/iocache.h"
+#include "support/psi.h"
 
 #include "../version.h"
 #include "uuid/uuid.h"
@@ -306,6 +307,8 @@ struct fuse2fs {
 	/* options set by fuse_opt_parse must be of type int */
 	int timing;
 #endif
+	struct psi *mem_psi;
+	struct psi_handler *mem_psi_handler;
 };
 
 #define FUSE2FS_CHECK_HANDLE(ff, fh) \
@@ -721,6 +724,74 @@ static void fuse2fs_mmp_destroy(struct fuse2fs *ff)
 # define fuse2fs_mmp_config(...)	((void)0)
 # define fuse2fs_mmp_destroy(...)	((void)0)
 #endif
+
+static void fuse2fs_psi_memory(const struct psi *psi, unsigned int reasons,
+			       void *data)
+{
+	struct fuse2fs *ff = data;
+	ext2_filsys fs;
+	errcode_t err;
+	int ret = 0;
+
+	fs = fuse2fs_start(ff);
+	dbg_printf(ff, "%s:\n", __func__);
+	if (fs && !psi_thread_cancelled(ff->mem_psi)) {
+		err = io_channel_set_options(fs->io, "cache_shrink");
+		if (err)
+			ret = translate_error(fs, 0, err);
+	} else {
+		psi_cancel_handler(ff->mem_psi, &ff->mem_psi_handler);
+	}
+	fuse2fs_finish(ff, ret);
+}
+
+static int fuse2fs_psi_config(struct fuse2fs *ff)
+{
+	errcode_t err;
+
+	/*
+	 * Activate when there are memory stalls for 200ms every 2s; or
+	 * 5min goes by.  Unprivileged processes can only use 2s windows.
+	 */
+	err = psi_create(PSI_MEMORY, PSI_TRIM_HEAP, 20100, 2000000,
+			 5 * 60 * 1000000, &ff->mem_psi);
+	if (err) {
+		switch (errno) {
+		case ENOENT:
+		case EINVAL:
+		case EACCES:
+		case EPERM:
+			break;
+		default:
+			err_printf(ff, "PSI: %s.\n", error_message(errno));
+			return -1;
+		}
+	}
+
+	err = psi_add_handler(ff->mem_psi, fuse2fs_psi_memory, ff,
+			      &ff->mem_psi_handler);
+	if (err) {
+		err_printf(ff, "PSI: %s.\n", error_message(errno));
+		return -1;
+	}
+
+	return 0;
+}
+
+static void fuse2fs_psi_start(struct fuse2fs *ff)
+{
+	if (psi_active(ff->mem_psi))
+		psi_start_thread(ff->mem_psi);
+}
+
+static void fuse2fs_psi_destroy(struct fuse2fs *ff)
+{
+	if (!psi_active(ff->mem_psi))
+		return;
+
+	psi_del_handler(ff->mem_psi, &ff->mem_psi_handler);
+	psi_destroy(&ff->mem_psi);
+}
 
 static inline struct fuse2fs *fuse2fs_get(void)
 {
@@ -1570,6 +1641,11 @@ static errcode_t fuse2fs_config_cache(struct fuse2fs *ff)
 		return err;
 	}
 
+	if (psi_active(ff->mem_psi)) {
+		snprintf(buf, sizeof(buf), "cache_auto_shrink=off");
+		err = io_channel_set_options(ff->fs->io, buf);
+	}
+
 	return 0;
 }
 
@@ -1937,6 +2013,7 @@ static void *op_init(struct fuse_conn_info *conn,
 	 * conveyed to the new child process.
 	 */
 	fuse2fs_mmp_start(ff);
+	fuse2fs_psi_start(ff);
 
 #if FUSE_VERSION >= FUSE_MAKE_VERSION(3, 17)
 	/*
@@ -7618,6 +7695,12 @@ int main(int argc, char *argv[])
 	try_set_io_flusher(&fctx);
 	try_adjust_oom_score(&fctx);
 
+	err = fuse2fs_psi_config(&fctx);
+	if (err) {
+		ret |= 32;
+		goto out;
+	}
+
 	/* Will we allow users to allocate every last block? */
 	if (getenv("FUSE2FS_ALLOC_ALL_BLOCKS")) {
 		log_printf(&fctx, "%s\n",
@@ -7707,6 +7790,7 @@ out:
  _("Mount failed while opening filesystem.  Check dmesg(1) for details."));
 		fflush(orig_stderr);
 	}
+	fuse2fs_psi_destroy(&fctx);
 	fuse2fs_mmp_destroy(&fctx);
 	fuse2fs_unmount(&fctx);
 	reset_com_err_hook();
