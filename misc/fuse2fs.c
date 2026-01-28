@@ -6745,9 +6745,10 @@ static int op_iomap_config(const struct fuse_iomap_config_params *p,
 
 	FUSE2FS_CHECK_CONTEXT(ff);
 
-	dbg_printf(ff, "%s: flags=0x%llx maxbytes=0x%llx\n", __func__,
+	dbg_printf(ff, "%s: flags=0x%llx maxbytes=0x%llx cache_maxbytes=%u\n", __func__,
 		   (unsigned long long)p->flags,
-		   (unsigned long long)p->maxbytes);
+		   (unsigned long long)p->maxbytes,
+		   p->cache_maxbytes);
 	fs = fuse2fs_start(ff);
 
 	cfg->flags |= FUSE_IOMAP_CONFIG_UUID;
