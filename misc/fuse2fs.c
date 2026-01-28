@@ -6734,6 +6734,7 @@ static void fuse2fs_alloc_stats_range(ext2_filsys fs, blk64_t blk, blk_t num,
 }
 
 static int op_iomap_config(uint64_t flags, off_t maxbytes,
+			   uint32_t cache_maxbytes,
 			   struct fuse_iomap_config *cfg)
 {
 	struct fuse2fs *ff = fuse2fs_get();
@@ -6742,9 +6743,10 @@ static int op_iomap_config(uint64_t flags, off_t maxbytes,
 
 	FUSE2FS_CHECK_CONTEXT(ff);
 
-	dbg_printf(ff, "%s: flags=0x%llx maxbytes=0x%llx\n", __func__,
+	dbg_printf(ff, "%s: flags=0x%llx maxbytes=0x%llx cache_maxbytes=%u\n", __func__,
 		   (unsigned long long)flags,
-		   (unsigned long long)maxbytes);
+		   (unsigned long long)maxbytes,
+		   cache_maxbytes);
 	fs = fuse2fs_start(ff);
 
 	cfg->flags |= FUSE_IOMAP_CONFIG_UUID;
