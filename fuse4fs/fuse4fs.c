@@ -49,6 +49,9 @@
 #ifdef HAVE_FUSE_SERVICE
 # include <sys/mount.h>
 # include <fuse_service.h>
+# ifdef HAVE_SETPROCTITLE
+#  include <bsd/unistd.h>
+# endif
 #endif
 #ifdef __SET_FOB_FOR_FUSE
 # undef _FILE_OFFSET_BITS
@@ -320,6 +323,7 @@ struct fuse4fs {
 	struct cache inodes;
 #ifdef HAVE_FUSE_SERVICE
 	struct fuse_service *service;
+	char *svc_cmdline;
 	int bdev_fd;
 #endif
 };
@@ -1457,6 +1461,18 @@ static bool fuse4fs_service_should_drop_kernel_mode(const struct fuse4fs *ff)
 	       !fuse_service_can_allow_other(ff->service);
 }
 
+static void fuse4fs_service_set_proc_cmdline(struct fuse4fs *ff, int argc,
+					     char *argv[],
+					     struct fuse_args *args)
+{
+	setproctitle_init(argc, argv, environ);
+	ff->svc_cmdline = fuse_service_cmdline(argc, argv, args);
+	if (!ff->svc_cmdline)
+		return;
+
+	setproctitle("-%s", ff->svc_cmdline);
+}
+
 static inline int
 fuse4fs_service_parse_cmdline(struct fuse_args *args,
 			      struct fuse_cmdline_opts *opts)
@@ -1483,6 +1499,9 @@ static int fuse4fs_service_finish(struct fuse4fs *ff, int exitcode)
 {
 	if (!fuse4fs_is_service(ff))
 		return exitcode;
+
+	setproctitle("-%s [cleaning up]", ff->svc_cmdline);
+	free(ff->svc_cmdline);
 
 	fuse_service_send_goodbye(ff->service, exitcode);
 	fuse_service_destroy(&ff->service);
@@ -1569,6 +1588,7 @@ static int fuse4fs_service_session_mount(struct fuse4fs *ff,
 #else
 # define fuse4fs_service_connect(...)		(0)
 # define fuse4fs_service_should_drop_kernel_mode(...)	(false)
+# define fuse4fs_service_set_proc_cmdline(...)	((void)0)
 # define fuse4fs_service_parse_cmdline(...)	(EOPNOTSUPP)
 # define fuse4fs_service_release(...)		((void)0)
 # define fuse4fs_service_close_bdev(...)	((void)0)
@@ -4319,6 +4339,11 @@ static void detect_linux_executable_open(int kernel_flags, int *access_check,
 	/* empty */
 }
 #endif /* __linux__ */
+
+static int fuse4fs_iomap_begin_read(struct fuse4fs *ff, ext2_ino_t ino,
+				    struct ext2_inode_large *inode, off_t pos,
+				    uint64_t count, uint32_t opflags,
+				    struct fuse_file_iomap *read);
 
 static int fuse4fs_open_file(struct fuse4fs *ff, const struct fuse_ctx *ctxt,
 			     ext2_ino_t ino, bool linked,
@@ -8382,6 +8407,9 @@ int main(int argc, char *argv[])
 	ret = fuse4fs_service_connect(&fctx, &args);
 	if (ret)
 		exit(1);
+
+	if (fuse4fs_is_service(&fctx))
+		fuse4fs_service_set_proc_cmdline(&fctx, argc, argv, &args);
 
 	ret = fuse_opt_parse(&args, &fctx, fuse4fs_opts, fuse4fs_opt_proc);
 	if (ret)
