@@ -714,4 +714,7 @@
 /* Define to 1 if CLOCK_MONOTONIC is present */
 #undef HAVE_CLOCK_MONOTONIC
 
+/* Define to 1 if you have the 'setproctitle' function. */
+#undef HAVE_SETPROCTITLE
+
 #include <dirpaths.h>

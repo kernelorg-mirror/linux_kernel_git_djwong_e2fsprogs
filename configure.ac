@@ -1626,6 +1626,15 @@ then
 fi
 
 dnl
+dnl see if setproctitle exists
+dnl
+AC_CHECK_LIB(bsd, setproctitle, [LIBBSD_LIB=-lbsd])
+AC_SUBST(LIBBSD_LIB)
+if test "$ac_cv_lib_bsd_setproctitle" = yes ; then
+	AC_DEFINE(HAVE_SETPROCTITLE, 1, Define to 1 if setproctitle])
+fi
+
+dnl
 dnl see if PR_SET_IO_FLUSHER exists
 dnl
 AC_MSG_CHECKING(for PR_SET_IO_FLUSHER)
