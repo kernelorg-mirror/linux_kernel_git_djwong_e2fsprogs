@@ -1418,6 +1418,27 @@ then
 	then
 		FUSE_USE_VERSION=399
 	fi
+
+	dnl
+	dnl Check if the fuse library has a fuse_iomap_bpf.h header
+	dnl
+	if test "$have_fuse_iomap" = yes
+	then
+		AC_MSG_CHECKING(for iomap bpf in libfuse)
+		AC_LINK_IFELSE(
+		[	AC_LANG_PROGRAM([[
+		#define _GNU_SOURCE
+		#define _FILE_OFFSET_BITS	64
+		#define FUSE_USE_VERSION	399
+		#include <fuse_lowlevel.h>
+		#include <fuse_iomap_bpf.h>
+			]], [[
+		struct fuse_iomap_begin_out bork = { };
+			]])
+		], have_fuse_iomap_bpf=yes
+		   AC_MSG_RESULT(yes),
+		   AC_MSG_RESULT(no))
+	fi
 fi
 if test -n "$FUSE_USE_VERSION"
 then
@@ -1624,6 +1645,91 @@ then
 	AC_DEFINE(HAVE_FUSE_CACHE_READDIR, 1,
 		  [Define to 1 if fuse supports cache_readdir])
 fi
+
+dnl
+dnl If we have fuse and iomap, let's see if we can build BPF
+dnl
+AC_ARG_WITH([vmlinux_h_path],
+  [AS_HELP_STRING([--with-vmlinux-h-path@<:@=PATH@:>@],
+		  [Use this vmlinux.h file for compiling BPF programs.])],
+  [],
+  [with_vmlinux_h_path=yes])
+
+CLANG_PROG=$(command -v clang 2>/dev/null)
+BPFTOOL_PROG=$(command -v bpftool 2>/dev/null)
+AC_SUBST(CLANG_PROG)
+AC_SUBST(BPFTOOL_PROG)
+
+if test -n "$have_fuse_lowlevel" && test -n "$have_fuse_iomap_bpf" && \
+   test -n "$CLANG_PROG" && test -n "$BPFTOOL_PROG"; then
+	AC_MSG_CHECKING(if we can create BPF programs)
+	dnl
+	dnl Check that clang and bpftool can create bpf files and skeletons
+	dnl
+	source_file="$(mktemp -u)"
+	rm -f "${source_file}".[coh]
+
+	cat > "${source_file}.c" << ENDL
+#include <vmlinux.h>
+#include <bpf/bpf_helpers.h>
+#include <bpf/bpf_tracing.h>
+
+char LICENSE@<:@@:>@ SEC("license") = "GPL v2";
+
+SEC("struct_ops/hooba")
+int BPF_PROG(moocow, unsigned long long arg)
+{
+    return arg + 1;
+}
+ENDL
+	# User-provided path
+	if test -n "$vmlinux_h_path"; then
+		VMLINUX_H_DIR="$(dirname "$vmlinux_h_path")"
+	fi
+	# RHEL
+	location="/usr/src/kernels/$(uname -r)/vmlinux.h"
+	if test -z "$VMLINUX_H_DIR" && test -s "$location"; then
+		VMLINUX_H_DIR="$(dirname "$location")"
+	fi
+	# Debian
+	location="/usr/include/$(gcc -print-multiarch)/linux/bpf/vmlinux.h"
+	if test -z "$VMLINUX_H_DIR" && test -s "$location"; then
+		VMLINUX_H_DIR="$(dirname "$location")"
+	fi
+
+	if test -n "$VMLINUX_H_DIR"; then
+		$CLANG_PROG --target=bpf -I "$VMLINUX_H_DIR" -c "${source_file}.c" -o "${source_file}.o"
+		$BPFTOOL_PROG gen skeleton "${source_file}.o" > "${source_file}.h"
+	fi
+	if test -s "${source_file}.h"; then
+		AC_MSG_RESULT(yes)
+	else
+		AC_MSG_RESULT(no)
+	fi
+
+	rm -f "${source_file}".[coh]
+
+	dnl
+	dnl Check for libbpf
+	dnl
+	BPF_LIB=
+	PKG_CHECK_MODULES([libbpf], [libbpf], [BPF_LIB=-lbpf], [])
+	AC_SUBST(BPF_LIB)
+
+	dnl
+	dnl Only enable iomap bpf if the compilers work and libbpf is present
+	dnl
+	AC_MSG_CHECKING(if we can enable iomap bpf overrides)
+	if test -s "${source_file}.h" && test -n "$BPF_LIB"; then
+		AC_DEFINE(HAVE_IOMAP_BPF, 1, Define to 1 if fuse iomap bpf present])
+		have_iomap_bpf=yes
+		AC_SUBST(VMLINUX_H_DIR)
+		AC_MSG_RESULT(yes)
+	else
+		AC_MSG_RESULT(no)
+	fi
+fi
+AC_SUBST(have_iomap_bpf)
 
 dnl
 dnl see if setproctitle exists

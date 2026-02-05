@@ -717,4 +717,7 @@
 /* Define to 1 if you have the 'setproctitle' function. */
 #undef HAVE_SETPROCTITLE
 
+/* Define to 1 if fuse iomap bpf present */
+#undef HAVE_IOMAP_BPF
+
 #include <dirpaths.h>

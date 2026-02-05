@@ -71,6 +71,13 @@
 #include "uuid/uuid.h"
 #include "e2p/e2p.h"
 
+#ifdef HAVE_IOMAP_BPF
+#include <bpf/libbpf.h>
+#include <bpf/bpf.h>
+#include <fuse_iomap_bpf.h>
+#include "iomap_bpf.skel.h"
+#endif
+
 #ifdef ENABLE_NLS
 #include <libintl.h>
 #include <locale.h>
@@ -256,7 +263,11 @@ enum fuse4fs_iomap_state {
 	IOMAP_UNKNOWN,
 	IOMAP_ENABLED,
 };
+
+#ifdef HAVE_IOMAP_BPF
+DEFINE_FUSE_IOMAP_BPF_MODULE(fuse4fs_iomap_bpf, fuse4fs_iomap_bpf_ops);
 #endif
+#endif /* HAVE_FUSE_IOMAP */
 
 /* Main program context */
 #define FUSE4FS_MAGIC		(0xEF53DEADUL)
@@ -304,7 +315,11 @@ struct fuse4fs {
 #endif
 	/* options set by fuse_opt_parse must be of type int */
 	int iomap_cache;
+#ifdef HAVE_IOMAP_BPF
+	int bpf_crap;
+	DECLARE_FUSE_IOMAP_BPF_CONTROL(fuse4fs_iomap_bpf, bpf);
 #endif
+#endif /* HAVE_FUSE_IOMAP */
 	unsigned int blockmask;
 	unsigned long offset;
 	unsigned int next_generation;
@@ -2009,6 +2024,10 @@ static void fuse4fs_unmount(struct fuse4fs *ff)
 {
 	char uuid[UUID_STR_SIZE];
 	errcode_t err;
+
+#ifdef HAVE_IOMAP_BPF
+	fuse4fs_iomap_bpf_ctl_cleanup(&ff->bpf);
+#endif
 
 	if (ff->fs) {
 		if (cache_initialized(&ff->inodes)) {
@@ -7785,6 +7804,15 @@ static void op_iomap_config(fuse_req_t req, uint64_t flags, uint64_t maxbytes,
 				&ff->old_alloc_stats_range);
 	}
 
+#ifdef HAVE_IOMAP_BPF
+	if (ff->bpf_crap) {
+		int ret2 = fuse4fs_iomap_bpf_ctl_setup(&ff->bpf, ff->fuse);
+		if (ret2)
+			fprintf(stderr,
+ _("Setting up fake bpf prog failed with err=%d\n"), ret2);
+	}
+#endif
+
 out_unlock:
 	fuse4fs_finish(ff, ret);
 	if (ret)
@@ -8279,7 +8307,10 @@ static struct fuse_opt fuse4fs_opts[] = {
 #ifdef HAVE_FUSE_IOMAP
 	FUSE4FS_OPT("iomap_cache",	iomap_cache,		1),
 	FUSE4FS_OPT("noiomap_cache",	iomap_cache,		0),
+#ifdef HAVE_IOMAP_BPF
+	FUSE4FS_OPT("bpf_crap",		bpf_crap,		1),
 #endif
+#endif /* HAVE_FUSE_IOMAP */
 
 #ifdef HAVE_FUSE_IOMAP
 #ifdef MS_LAZYTIME

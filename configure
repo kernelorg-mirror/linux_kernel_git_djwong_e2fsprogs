@@ -696,6 +696,13 @@ gcc_ar
 UNI_DIFF_OPTS
 SEM_INIT_LIB
 LIBBSD_LIB
+have_iomap_bpf
+VMLINUX_H_DIR
+BPF_LIB
+libbpf_LIBS
+libbpf_CFLAGS
+BPFTOOL_PROG
+CLANG_PROG
 FUSE4FS_CMT
 FUSE2FS_CMT
 fuse_service_socket_dir
@@ -935,6 +942,7 @@ with_libarchive
 with_fuse_service_socket_dir
 enable_fuse2fs
 enable_fuse4fs
+with_vmlinux_h_path
 enable_lto
 enable_ubsan
 enable_addrsan
@@ -962,6 +970,8 @@ ARCHIVE_CFLAGS
 ARCHIVE_LIBS
 fuse3_CFLAGS
 fuse3_LIBS
+libbpf_CFLAGS
+libbpf_LIBS
 CXX
 CXXFLAGS
 CCC
@@ -1658,6 +1668,8 @@ Optional Packages:
   --without-libarchive    disable use of libarchive
   --with-fuse-service-socket-dir[=DIR]
                           Create fuse3 filesystem service sockets in DIR.
+  --with-vmlinux-h-path[=PATH]
+                          Use this vmlinux.h file for compiling BPF programs.
   --with-multiarch=ARCH   specify the multiarch triplet
   --with-udev-rules-dir[=DIR]
                           Install udev rules into DIR.
@@ -1686,6 +1698,9 @@ Some influential environment variables:
   fuse3_CFLAGS
               C compiler flags for fuse3, overriding pkg-config
   fuse3_LIBS  linker flags for fuse3, overriding pkg-config
+  libbpf_CFLAGS
+              C compiler flags for libbpf, overriding pkg-config
+  libbpf_LIBS linker flags for libbpf, overriding pkg-config
   CXX         C++ compiler command
   CXXFLAGS    C++ compiler flags
   udev_CFLAGS C compiler flags for udev, overriding pkg-config
@@ -14653,6 +14668,44 @@ rm -f core conftest.err conftest.$ac_objext conftest.beam \
 	then
 		FUSE_USE_VERSION=399
 	fi
+
+				if test "$have_fuse_iomap" = yes
+	then
+		{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking for iomap bpf in libfuse" >&5
+printf %s "checking for iomap bpf in libfuse... " >&6; }
+		cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+
+		#define _GNU_SOURCE
+		#define _FILE_OFFSET_BITS	64
+		#define FUSE_USE_VERSION	399
+		#include <fuse_lowlevel.h>
+		#include <fuse_iomap_bpf.h>
+
+int
+main (void)
+{
+
+		struct fuse_iomap_begin_out bork = { };
+
+  ;
+  return 0;
+}
+
+_ACEOF
+if ac_fn_c_try_link "$LINENO"
+then :
+  have_fuse_iomap_bpf=yes
+		   { printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: yes" >&5
+printf "%s\n" "yes" >&6; }
+else case e in #(
+  e) { printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: no" >&5
+printf "%s\n" "no" >&6; } ;;
+esac
+fi
+rm -f core conftest.err conftest.$ac_objext conftest.beam \
+    conftest$ac_exeext conftest.$ac_ext
+	fi
 fi
 if test -n "$FUSE_USE_VERSION"
 then
@@ -15061,6 +15114,181 @@ then
 printf "%s\n" "#define HAVE_FUSE_CACHE_READDIR 1" >>confdefs.h
 
 fi
+
+
+# Check whether --with-vmlinux_h_path was given.
+if test ${with_vmlinux_h_path+y}
+then :
+  withval=$with_vmlinux_h_path;
+else case e in #(
+  e) with_vmlinux_h_path=yes ;;
+esac
+fi
+
+
+CLANG_PROG=$(command -v clang 2>/dev/null)
+BPFTOOL_PROG=$(command -v bpftool 2>/dev/null)
+
+
+
+if test -n "$have_fuse_lowlevel" && test -n "$have_fuse_iomap_bpf" && \
+   test -n "$CLANG_PROG" && test -n "$BPFTOOL_PROG"; then
+	{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking if we can create BPF programs" >&5
+printf %s "checking if we can create BPF programs... " >&6; }
+				source_file="$(mktemp -u)"
+	rm -f "${source_file}".coh
+
+	cat > "${source_file}.c" << ENDL
+#include <vmlinux.h>
+#include <bpf/bpf_helpers.h>
+#include <bpf/bpf_tracing.h>
+
+char LICENSE[] SEC("license") = "GPL v2";
+
+SEC("struct_ops/hooba")
+int BPF_PROG(moocow, unsigned long long arg)
+{
+    return arg + 1;
+}
+ENDL
+	# User-provided path
+	if test -n "$vmlinux_h_path"; then
+		VMLINUX_H_DIR="$(dirname "$vmlinux_h_path")"
+	fi
+	# RHEL
+	location="/usr/src/kernels/$(uname -r)/vmlinux.h"
+	if test -z "$VMLINUX_H_DIR" && test -s "$location"; then
+		VMLINUX_H_DIR="$(dirname "$location")"
+	fi
+	# Debian
+	location="/usr/include/$(gcc -print-multiarch)/linux/bpf/vmlinux.h"
+	if test -z "$VMLINUX_H_DIR" && test -s "$location"; then
+		VMLINUX_H_DIR="$(dirname "$location")"
+	fi
+
+	if test -n "$VMLINUX_H_DIR"; then
+		$CLANG_PROG --target=bpf -I "$VMLINUX_H_DIR" -c "${source_file}.c" -o "${source_file}.o"
+		$BPFTOOL_PROG gen skeleton "${source_file}.o" > "${source_file}.h"
+	fi
+	if test -s "${source_file}.h"; then
+		{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: yes" >&5
+printf "%s\n" "yes" >&6; }
+	else
+		{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: no" >&5
+printf "%s\n" "no" >&6; }
+	fi
+
+	rm -f "${source_file}".coh
+
+				BPF_LIB=
+
+pkg_failed=no
+{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking for libbpf" >&5
+printf %s "checking for libbpf... " >&6; }
+
+if test -n "$libbpf_CFLAGS"; then
+    pkg_cv_libbpf_CFLAGS="$libbpf_CFLAGS"
+ elif test -n "$PKG_CONFIG"; then
+    if test -n "$PKG_CONFIG" && \
+    { { printf "%s\n" "$as_me:${as_lineno-$LINENO}: \$PKG_CONFIG --exists --print-errors \"libbpf\""; } >&5
+  ($PKG_CONFIG --exists --print-errors "libbpf") 2>&5
+  ac_status=$?
+  printf "%s\n" "$as_me:${as_lineno-$LINENO}: \$? = $ac_status" >&5
+  test $ac_status = 0; }; then
+  pkg_cv_libbpf_CFLAGS=`$PKG_CONFIG --cflags "libbpf" 2>/dev/null`
+		      test "x$?" != "x0" && pkg_failed=yes
+else
+  pkg_failed=yes
+fi
+ else
+    pkg_failed=untried
+fi
+if test -n "$libbpf_LIBS"; then
+    pkg_cv_libbpf_LIBS="$libbpf_LIBS"
+ elif test -n "$PKG_CONFIG"; then
+    if test -n "$PKG_CONFIG" && \
+    { { printf "%s\n" "$as_me:${as_lineno-$LINENO}: \$PKG_CONFIG --exists --print-errors \"libbpf\""; } >&5
+  ($PKG_CONFIG --exists --print-errors "libbpf") 2>&5
+  ac_status=$?
+  printf "%s\n" "$as_me:${as_lineno-$LINENO}: \$? = $ac_status" >&5
+  test $ac_status = 0; }; then
+  pkg_cv_libbpf_LIBS=`$PKG_CONFIG --libs "libbpf" 2>/dev/null`
+		      test "x$?" != "x0" && pkg_failed=yes
+else
+  pkg_failed=yes
+fi
+ else
+    pkg_failed=untried
+fi
+
+
+
+if test $pkg_failed = yes; then
+        { printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: no" >&5
+printf "%s\n" "no" >&6; }
+
+if $PKG_CONFIG --atleast-pkgconfig-version 0.20; then
+        _pkg_short_errors_supported=yes
+else
+        _pkg_short_errors_supported=no
+fi
+        if test $_pkg_short_errors_supported = yes; then
+                libbpf_PKG_ERRORS=`$PKG_CONFIG --short-errors --print-errors --cflags --libs "libbpf" 2>&1`
+        else
+                libbpf_PKG_ERRORS=`$PKG_CONFIG --print-errors --cflags --libs "libbpf" 2>&1`
+        fi
+        # Put the nasty error message in config.log where it belongs
+        echo "$libbpf_PKG_ERRORS" >&5
+
+        as_fn_error $? "Package requirements (libbpf) were not met:
+
+$libbpf_PKG_ERRORS
+
+Consider adjusting the PKG_CONFIG_PATH environment variable if you
+installed software in a non-standard prefix.
+
+Alternatively, you may set the environment variables libbpf_CFLAGS
+and libbpf_LIBS to avoid the need to call pkg-config.
+See the pkg-config man page for more details." "$LINENO" 5
+elif test $pkg_failed = untried; then
+        { printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: no" >&5
+printf "%s\n" "no" >&6; }
+        { { printf "%s\n" "$as_me:${as_lineno-$LINENO}: error: in '$ac_pwd':" >&5
+printf "%s\n" "$as_me: error: in '$ac_pwd':" >&2;}
+as_fn_error $? "The pkg-config script could not be found or is too old.  Make sure it
+is in your PATH or set the PKG_CONFIG environment variable to the full
+path to pkg-config.
+
+Alternatively, you may set the environment variables libbpf_CFLAGS
+and libbpf_LIBS to avoid the need to call pkg-config.
+See the pkg-config man page for more details.
+
+To get pkg-config, see <http://pkg-config.freedesktop.org/>.
+See 'config.log' for more details" "$LINENO" 5; }
+else
+        libbpf_CFLAGS=$pkg_cv_libbpf_CFLAGS
+        libbpf_LIBS=$pkg_cv_libbpf_LIBS
+        { printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: yes" >&5
+printf "%s\n" "yes" >&6; }
+        BPF_LIB=-lbpf
+fi
+
+
+				{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking if we can enable iomap bpf overrides" >&5
+printf %s "checking if we can enable iomap bpf overrides... " >&6; }
+	if test -s "${source_file}.h" && test -n "$BPF_LIB"; then
+		printf "%s\n" "#define HAVE_IOMAP_BPF 1" >>confdefs.h
+
+		have_iomap_bpf=yes
+
+		{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: yes" >&5
+printf "%s\n" "yes" >&6; }
+	else
+		{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: no" >&5
+printf "%s\n" "no" >&6; }
+	fi
+fi
+
 
 { printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking for setproctitle in -lbsd" >&5
 printf %s "checking for setproctitle in -lbsd... " >&6; }
