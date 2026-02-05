@@ -43,6 +43,13 @@ CROND_DIR = @crond_dir@
 HAVE_SYSTEMD = @have_systemd@
 SYSTEMD_SYSTEM_UNIT_DIR = @systemd_system_unit_dir@
 HAVE_FUSE_SERVICE = @have_fuse_service@
+FUSE3_CFLAGS = @fuse3_CFLAGS@
+VMLINUX_H_DIR = @VMLINUX_H_DIR@
+FUSE_INCLUDE_PATH = @FUSE_INCLUDE_PATH@
+HAVE_IOMAP_BPF = @have_iomap_bpf@
+CLANG = @CLANG_PROG@
+BPFTOOL = @BPFTOOL_PROG@
+LIBBPF = @BPF_LIB@
 
 @SET_MAKE@
 
