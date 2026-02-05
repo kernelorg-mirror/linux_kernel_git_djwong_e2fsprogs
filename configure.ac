@@ -1626,6 +1626,92 @@ then
 fi
 
 dnl
+dnl If we have fuse and iomap, let's see if we can build BPF
+dnl
+AC_ARG_WITH([vmlinux_h_path],
+  [AS_HELP_STRING([--with-vmlinux-h-path@<:@=PATH@:>@],
+		  [Use this vmlinux.h file on the target for compiling BPF programs.])],
+  [],
+  [with_vmlinux_h_path=yes])
+vmlinux_h_path="$withval"
+AC_ARG_WITH([fuse_include_path],
+  [AS_HELP_STRING([--with-fuse-include-path@<:@=PATH@:>@],
+		  [Use this path on the target to libfuse headers for compiling BPF programs.])],
+  [],
+  [with_fuse_include_path=yes])
+fuse_include_path="$withval"
+
+if test -n "$have_fuse_lowlevel" && test -n "$have_fuse_iomap"; then
+	AC_MSG_CHECKING(if we can find vmlinux.h)
+
+	dnl
+	dnl fuse4fs needs to have a vmlinux.h to compile bpf on the fly.
+	dnl Either the user gave us a path to one in the target environment,
+	dnl or we need to detect it based on the OS kernel.  If this were to
+	dnl be made production-ready you'd have to detect the path at
+	dnl runtime.  Not sure what you do for SUSE or Debian.
+	dnl
+
+	dnl User-provided path
+	if test -n "$vmlinux_h_path"; then
+		VMLINUX_H_DIR="$(dirname "$vmlinux_h_path")"
+	fi
+
+	dnl RHEL/Fedora
+	location="/usr/src/kernels/$(uname -r)/vmlinux.h"
+	if test -z "$VMLINUX_H_DIR" && test -s "$location"; then
+		VMLINUX_H_DIR="$(dirname "$location")"
+	fi
+
+	dnl Debian
+	location="/usr/include/$(gcc -print-multiarch)/linux/bpf/vmlinux.h"
+	if test -z "$VMLINUX_H_DIR" && test -s "$location"; then
+		VMLINUX_H_DIR="$(dirname "$location")"
+	fi
+
+	if test -n "$VMLINUX_H_DIR"; then
+		AC_MSG_RESULT(yes)
+	else
+		AC_MSG_RESULT(no)
+	fi
+
+	dnl
+	dnl fuse4fs also needs to know the path to the fuse library headers
+	dnl to compile bpf on the fly.  If the user gave us one, cool;
+	dnl otherwise just default to /usr/include/fuse3.
+	dnl
+	if test -n "$fuse_include_path"; then
+		FUSE_INCLUDE_PATH="$fuse_include_path"
+	else
+		FUSE_INCLUDE_PATH="/usr/include/fuse3"
+	fi
+
+	dnl
+	dnl Check for libbpf.  It's not fatal to configure if we don't find it.
+	dnl
+	BPF_LIB=
+	PKG_CHECK_MODULES([libbpf], [libbpf], [BPF_LIB=-lbpf], [BPF_LIB=])
+	AC_SUBST(BPF_LIB)
+
+	dnl
+	dnl Only enable iomap bpf if the compilers work and libbpf is present
+	dnl
+	AC_MSG_CHECKING(if we can enable iomap bpf overrides)
+	if test -n "$VMLINUX_H_DIR" && test -n "$FUSE_INCLUDE_PATH" && test -n "$BPF_LIB"; then
+		AC_DEFINE(HAVE_IOMAP_BPF, 1, Define to 1 if fuse iomap bpf present])
+		AC_DEFINE_UNQUOTED(VMLINUX_H_DIR, ["$VMLINUX_H_DIR"], Location of vmlinux.h])
+		AC_DEFINE_UNQUOTED(FUSE_INCLUDE_PATH, ["$FUSE_INCLUDE_PATH"], Location of fuse headers])
+		have_iomap_bpf=yes
+		AC_SUBST(VMLINUX_H_DIR)
+		AC_MSG_RESULT(yes)
+	else
+		have_iomap_bpf=
+		AC_MSG_RESULT(no)
+	fi
+fi
+AC_SUBST(have_iomap_bpf)
+
+dnl
 dnl see if setproctitle exists
 dnl
 AC_CHECK_LIB(bsd, setproctitle, [LIBBSD_LIB=-lbsd])

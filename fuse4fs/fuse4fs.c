@@ -71,6 +71,10 @@
 #include "uuid/uuid.h"
 #include "e2p/e2p.h"
 
+#ifdef HAVE_IOMAP_BPF
+#include "fuse4fs_bpf.h"
+#endif
+
 #ifdef ENABLE_NLS
 #include <libintl.h>
 #include <locale.h>
@@ -304,7 +308,11 @@ struct fuse4fs {
 #endif
 	/* options set by fuse_opt_parse must be of type int */
 	int iomap_cache;
+#ifdef HAVE_IOMAP_BPF
+	int bpf_crap;
+	struct fuse4fs_bpf_ctl bpf;
 #endif
+#endif /* HAVE_FUSE_IOMAP */
 	unsigned int blockmask;
 	unsigned long offset;
 	unsigned int next_generation;
@@ -2009,6 +2017,10 @@ static void fuse4fs_unmount(struct fuse4fs *ff)
 {
 	char uuid[UUID_STR_SIZE];
 	errcode_t err;
+
+#ifdef HAVE_IOMAP_BPF
+	fuse4fs_bpf_ctl_cleanup(&ff->bpf);
+#endif
 
 	if (ff->fs) {
 		if (cache_initialized(&ff->inodes)) {
@@ -7788,6 +7800,71 @@ static void op_iomap_config(fuse_req_t req, uint64_t flags, uint64_t maxbytes,
 				&ff->old_alloc_stats_range);
 	}
 
+#ifdef HAVE_IOMAP_BPF
+	if (ff->bpf_crap) {
+		char source_code[4096];
+		struct fuse4fs_bpf_attrs attrs = {
+			.skel_name	= "bogus_iomap_bpf",
+			.ops_name	= "bogus_iomap_bpf_ops",
+			.begin_fn_name	= "bogus_iomap_begin_bpf",
+//			.end_fn_name	= "bogus_iomap_end_bpf",
+//			.ioend_fn_name	= "bogus_iomap_ioend_bpf",
+		};
+		struct fuse4fs_bpf_compile cc = {
+			.source_code = source_code,
+			.vmlinux_h_dir	= VMLINUX_H_DIR,
+			.fuse_include_dir = FUSE_INCLUDE_PATH,
+		};
+		int ret2;
+
+		snprintf(source_code, sizeof(source_code),
+"#include <vmlinux.h>\n\
+#include <bpf/bpf_helpers.h>\n\
+#include <bpf/bpf_tracing.h>\n\
+\n\
+#include <fuse_iomap_bpf.h>\n\
+\n\
+DECLARE_GPL2_LICENSE_FOR_FUSE_IOMAP_BPF;\n\
+\n\
+FUSE_IOMAP_BEGIN_BPF_FUNC(bogus_iomap_begin_bpf)\n\
+{\n\
+	const uint32_t dev = %u;\n\
+	const uint32_t blocksize = %u;\n\
+\n\
+	/*\n\
+	 * Create an alternating pattern of written and unwritten mappings\n\
+	 * for FIEMAP as a demonstration of using BPF for iomapping.  Do NOT\n\
+	 * run this in production!\n\
+	 */\n\
+	if ((opflags & FUSE_IOMAP_OP_REPORT) && pos <= (16 * blocksize)) {\n\
+		outarg->read.offset = pos;\n\
+		outarg->read.length = blocksize;\n\
+		outarg->read.type = ((pos / blocksize) %% 2) + FUSE_IOMAP_TYPE_MAPPED;\n\
+		outarg->read.dev = dev;\n\
+		outarg->read.addr = (99 * blocksize) + pos;\n\
+\n\
+		fuse_iomap_begin_pure_overwrite(outarg);\n\
+		return FIB_HANDLED;\n\
+	}\n\
+\n\
+	return FIB_FALLBACK;\n\
+}\n\
+\n\
+DEFINE_FUSE_IOMAP_BPF_OPS(bogus_iomap_bpf_ops, \"bogus_bpf\",\n\
+		bogus_iomap_begin_bpf, NULL, NULL);\n",
+				ff->iomap_dev,
+				ff->fs->blocksize);
+
+		ret2 = fuse4fs_bpf_compile(&attrs, &cc);
+		if (!ret2)
+			ret2 = fuse4fs_bpf_ctl_setup(&ff->bpf, ff->fuse, &attrs);
+		if (ret2) {
+			fprintf(stderr,
+ _("Setting up bogus bpf prog failed with err=%d\n"), ret2);
+		}
+	}
+#endif
+
 out_unlock:
 	fuse4fs_finish(ff, ret);
 	if (ret)
@@ -8282,7 +8359,10 @@ static struct fuse_opt fuse4fs_opts[] = {
 #ifdef HAVE_FUSE_IOMAP
 	FUSE4FS_OPT("iomap_cache",	iomap_cache,		1),
 	FUSE4FS_OPT("noiomap_cache",	iomap_cache,		0),
+#ifdef HAVE_IOMAP_BPF
+	FUSE4FS_OPT("bpf_crap",		bpf_crap,		1),
 #endif
+#endif /* HAVE_FUSE_IOMAP */
 
 #ifdef HAVE_FUSE_IOMAP
 #ifdef MS_LAZYTIME
