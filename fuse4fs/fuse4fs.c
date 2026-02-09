@@ -4364,6 +4364,37 @@ static int fuse4fs_iomap_begin_read(struct fuse4fs *ff, ext2_ino_t ino,
 				    uint64_t count, uint32_t opflags,
 				    struct fuse_file_iomap *read);
 
+static void fuse4fs_try_upsert_first_mapping(struct fuse4fs *ff, ext2_ino_t ino,
+					     struct fuse_file_info *fp)
+{
+	struct ext2_inode_large inode;
+	struct fuse_file_iomap read = { };
+	uint64_t fsize;
+	errcode_t err;
+
+	if (!ff->iomap_cache || (fp->flags & O_TRUNC))
+		return;
+
+	err = fuse4fs_read_inode(ff->fs, ino, &inode);
+	if (err)
+		return;
+
+	if (!S_ISREG(inode.i_mode))
+		return;
+
+	fsize = EXT2_I_SIZE(&inode);
+	if (!fsize)
+		return;
+
+	/* try to map the first 64k */
+	err = fuse4fs_iomap_begin_read(ff, ino, &inode, 0, min(fsize, 65536),
+			0, &read);
+	if (err)
+		return;
+
+	fuse_lowlevel_iomap_upsert_mappings(ff->fuse, ino, ino, &read, NULL);
+}
+
 static int fuse4fs_open_file(struct fuse4fs *ff, const struct fuse_ctx *ctxt,
 			     ext2_ino_t ino, bool linked,
 			     struct fuse_file_info *fp)
@@ -4458,7 +4489,7 @@ static int fuse4fs_open_file(struct fuse4fs *ff, const struct fuse_ctx *ctxt,
 	/* fuse 3.5: cache dirents from readdir contents */
 	fp->cache_readdir = 1;
 #endif
-
+	fuse4fs_try_upsert_first_mapping(ff, ino, fp);
 out:
 	if (ret)
 		ext2fs_free_mem(&file);
