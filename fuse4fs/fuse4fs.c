@@ -7878,12 +7878,20 @@ FUSE_IOMAP_BEGIN_BPF_FUNC(bogus_iomap_begin_bpf)\n\
 	const uint32_t dev = %u;\n\
 	const uint32_t blocksize = %u;\n\
 \n\
+	bpf_printk(\"ino %%llu pos %%llu\\n\",\n\
+		   fi->nodeid,  pos);\n\
+\n\
 	/*\n\
 	 * Create an alternating pattern of written and unwritten mappings\n\
 	 * for FIEMAP as a demonstration of using BPF for iomapping.  Do NOT\n\
 	 * run this in production!\n\
 	 */\n\
 	if ((opflags & FUSE_IOMAP_OP_REPORT) && pos <= (16 * blocksize)) {\n\
+		struct fuse_range fubar = {\n\
+			.offset = 325 * blocksize,\n\
+			.length = 37 * blocksize,\n\
+		};\n\
+\n\
 		outarg->read.offset = pos;\n\
 		outarg->read.length = blocksize;\n\
 		outarg->read.type = ((pos / blocksize) %% 2) + FUSE_IOMAP_TYPE_MAPPED;\n\
@@ -7891,6 +7899,8 @@ FUSE_IOMAP_BEGIN_BPF_FUNC(bogus_iomap_begin_bpf)\n\
 		outarg->read.addr = (99 * blocksize) + pos;\n\
 \n\
 		fuse_iomap_begin_pure_overwrite(outarg);\n\
+		fuse_bpf_iomap_inval_mappings(fi, &fubar, NULL);\n\
+		fuse_bpf_iomap_upsert_mappings(fi, &outarg->read, NULL);\n\
 		return FIB_HANDLED;\n\
 	}\n\
 \n\
