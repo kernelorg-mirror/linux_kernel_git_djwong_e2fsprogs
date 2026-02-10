@@ -7810,7 +7810,7 @@ FUSE_IOMAP_BEGIN_BPF_FUNC(bogus_iomap_begin_bpf)\n\
 	const uint32_t blocksize = %u;\n\
 \n\
 	bpf_printk(\"ino %%llu pos %%llu\\n\",\n\
-		   fi->nodeid,  pos);\n\
+		   fuse_bpf_inode_nodeid(fbi),  pos);\n\
 \n\
 	/*\n\
 	 * Create an alternating pattern of written and unwritten mappings\n\
@@ -7830,8 +7830,8 @@ FUSE_IOMAP_BEGIN_BPF_FUNC(bogus_iomap_begin_bpf)\n\
 		outarg->read.addr = (99 * blocksize) + pos;\n\
 \n\
 		fuse_iomap_begin_pure_overwrite(outarg);\n\
-		fuse_bpf_iomap_inval_mappings(fi, &fubar, NULL);\n\
-		fuse_bpf_iomap_upsert_mappings(fi, &outarg->read, NULL);\n\
+		fuse_bpf_iomap_inval_mappings(fbi, &fubar, NULL);\n\
+		fuse_bpf_iomap_upsert_mappings(fbi, &outarg->read, NULL);\n\
 		return FIB_HANDLED;\n\
 	}\n\
 \n\
