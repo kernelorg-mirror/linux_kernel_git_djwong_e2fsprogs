@@ -45,6 +45,11 @@ SYSTEMD_SYSTEM_UNIT_DIR = @systemd_system_unit_dir@
 HAVE_FUSE_SERVICE = @have_fuse_service@
 HAVE_FUSE4FS_SERVICE = @have_fuse4fs_service@
 
+VMLINUX_H_DIR = @VMLINUX_H_DIR@
+FUSE_INCLUDE_PATH = @FUSE_INCLUDE_PATH@
+HAVE_IOMAP_BPF = @have_iomap_bpf@
+LIBBPF = @BPF_LIB@
+
 @SET_MAKE@
 
 @ifGNUmake@ V =
