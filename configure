@@ -696,6 +696,11 @@ gcc_ar
 UNI_DIFF_OPTS
 SEM_INIT_LIB
 LIBBSD_LIB
+have_iomap_bpf
+VMLINUX_H_DIR
+BPF_LIB
+libbpf_LIBS
+libbpf_CFLAGS
 FUSE4FS_CMT
 FUSE2FS_CMT
 fuse_service_socket_perms
@@ -937,6 +942,9 @@ with_fuse_service_socket_dir
 with_fuse_service_socket_perms
 enable_fuse2fs
 enable_fuse4fs
+enable_bpf
+with_vmlinux_h_path
+with_fuse_include_path
 enable_lto
 enable_ubsan
 enable_addrsan
@@ -964,6 +972,8 @@ ARCHIVE_CFLAGS
 ARCHIVE_LIBS
 fuse3_CFLAGS
 fuse3_LIBS
+libbpf_CFLAGS
+libbpf_LIBS
 CXX
 CXXFLAGS
 CCC
@@ -1634,6 +1644,7 @@ Optional Features:
   --disable-largefile     omit support for large files
   --disable-fuse2fs       do not build fuse2fs
   --disable-fuse4fs       do not build fuse4fs
+  --disable-bpf           disable use of bpf in fuse4fs
   --enable-lto            enable link time optimization
   --enable-ubsan          enable undefined behavior sanitizer
   --enable-addrsan        enable address sanitizer
@@ -1663,6 +1674,12 @@ Optional Packages:
   --with-fuse-service-socket-perms[=MODE]
                           Create fuse3 filesystem service socket with these
                           permissions.
+  --with-vmlinux-h-path[=PATH]
+                          Use this vmlinux.h file on the target for compiling
+                          BPF programs.
+  --with-fuse-include-path[=PATH]
+                          Use this path on the target to libfuse headers for
+                          compiling BPF programs.
   --with-multiarch=ARCH   specify the multiarch triplet
   --with-udev-rules-dir[=DIR]
                           Install udev rules into DIR.
@@ -1691,6 +1708,9 @@ Some influential environment variables:
   fuse3_CFLAGS
               C compiler flags for fuse3, overriding pkg-config
   fuse3_LIBS  linker flags for fuse3, overriding pkg-config
+  libbpf_CFLAGS
+              C compiler flags for libbpf, overriding pkg-config
+  libbpf_LIBS linker flags for libbpf, overriding pkg-config
   CXX         C++ compiler command
   CXXFLAGS    C++ compiler flags
   udev_CFLAGS C compiler flags for udev, overriding pkg-config
@@ -13647,6 +13667,12 @@ then :
   printf "%s\n" "#define HAVE_CHFLAGS 1" >>confdefs.h
 
 fi
+ac_fn_c_check_func "$LINENO" "close_range" "ac_cv_func_close_range"
+if test "x$ac_cv_func_close_range" = xyes
+then :
+  printf "%s\n" "#define HAVE_CLOSE_RANGE 1" >>confdefs.h
+
+fi
 ac_fn_c_check_func "$LINENO" "dlopen" "ac_cv_func_dlopen"
 if test "x$ac_cv_func_dlopen" = xyes
 then :
@@ -15183,6 +15209,171 @@ then
 
 printf "%s\n" "#define HAVE_FUSE_CACHE_READDIR 1" >>confdefs.h
 
+fi
+
+# Check whether --enable-bpf was given.
+if test ${enable_bpf+y}
+then :
+  enableval=$enable_bpf;
+fi
+
+
+
+# Check whether --with-vmlinux_h_path was given.
+if test ${with_vmlinux_h_path+y}
+then :
+  withval=$with_vmlinux_h_path;
+else case e in #(
+  e) with_vmlinux_h_path=yes ;;
+esac
+fi
+
+vmlinux_h_path="$withval"
+
+# Check whether --with-fuse_include_path was given.
+if test ${with_fuse_include_path+y}
+then :
+  withval=$with_fuse_include_path;
+else case e in #(
+  e) with_fuse_include_path=yes ;;
+esac
+fi
+
+fuse_include_path="$withval"
+
+if test "x$enable_bpf" != "xno" && test -n "$have_fuse_lowlevel" && test -n "$have_fuse_iomap"; then
+	{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking if we can find vmlinux.h" >&5
+printf %s "checking if we can find vmlinux.h... " >&6; }
+
+
+		if test -n "$vmlinux_h_path"; then
+		VMLINUX_H_DIR="$(dirname "$vmlinux_h_path")"
+	fi
+
+		location="/usr/src/kernels/$(uname -r)/vmlinux.h"
+	if test -z "$VMLINUX_H_DIR" && test -s "$location"; then
+		VMLINUX_H_DIR="$(dirname "$location")"
+	fi
+
+		location="/usr/include/$(gcc -print-multiarch)/linux/bpf/vmlinux.h"
+	if test -z "$VMLINUX_H_DIR" && test -s "$location"; then
+		VMLINUX_H_DIR="$(dirname "$location")"
+	fi
+
+	if test -n "$VMLINUX_H_DIR"; then
+		{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: yes" >&5
+printf "%s\n" "yes" >&6; }
+	else
+		{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: no" >&5
+printf "%s\n" "no" >&6; }
+	fi
+
+						if test -n "$fuse_include_path"; then
+		FUSE_INCLUDE_PATH="$fuse_include_path"
+	else
+		FUSE_INCLUDE_PATH="/usr/include/fuse3"
+	fi
+
+				BPF_LIB=
+
+pkg_failed=no
+{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking for libbpf" >&5
+printf %s "checking for libbpf... " >&6; }
+
+if test -n "$libbpf_CFLAGS"; then
+    pkg_cv_libbpf_CFLAGS="$libbpf_CFLAGS"
+ elif test -n "$PKG_CONFIG"; then
+    if test -n "$PKG_CONFIG" && \
+    { { printf "%s\n" "$as_me:${as_lineno-$LINENO}: \$PKG_CONFIG --exists --print-errors \"libbpf\""; } >&5
+  ($PKG_CONFIG --exists --print-errors "libbpf") 2>&5
+  ac_status=$?
+  printf "%s\n" "$as_me:${as_lineno-$LINENO}: \$? = $ac_status" >&5
+  test $ac_status = 0; }; then
+  pkg_cv_libbpf_CFLAGS=`$PKG_CONFIG --cflags "libbpf" 2>/dev/null`
+		      test "x$?" != "x0" && pkg_failed=yes
+else
+  pkg_failed=yes
+fi
+ else
+    pkg_failed=untried
+fi
+if test -n "$libbpf_LIBS"; then
+    pkg_cv_libbpf_LIBS="$libbpf_LIBS"
+ elif test -n "$PKG_CONFIG"; then
+    if test -n "$PKG_CONFIG" && \
+    { { printf "%s\n" "$as_me:${as_lineno-$LINENO}: \$PKG_CONFIG --exists --print-errors \"libbpf\""; } >&5
+  ($PKG_CONFIG --exists --print-errors "libbpf") 2>&5
+  ac_status=$?
+  printf "%s\n" "$as_me:${as_lineno-$LINENO}: \$? = $ac_status" >&5
+  test $ac_status = 0; }; then
+  pkg_cv_libbpf_LIBS=`$PKG_CONFIG --libs "libbpf" 2>/dev/null`
+		      test "x$?" != "x0" && pkg_failed=yes
+else
+  pkg_failed=yes
+fi
+ else
+    pkg_failed=untried
+fi
+
+
+
+if test $pkg_failed = yes; then
+        { printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: no" >&5
+printf "%s\n" "no" >&6; }
+
+if $PKG_CONFIG --atleast-pkgconfig-version 0.20; then
+        _pkg_short_errors_supported=yes
+else
+        _pkg_short_errors_supported=no
+fi
+        if test $_pkg_short_errors_supported = yes; then
+                libbpf_PKG_ERRORS=`$PKG_CONFIG --short-errors --print-errors --cflags --libs "libbpf" 2>&1`
+        else
+                libbpf_PKG_ERRORS=`$PKG_CONFIG --print-errors --cflags --libs "libbpf" 2>&1`
+        fi
+        # Put the nasty error message in config.log where it belongs
+        echo "$libbpf_PKG_ERRORS" >&5
+
+        BPF_LIB=
+elif test $pkg_failed = untried; then
+        { printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: no" >&5
+printf "%s\n" "no" >&6; }
+        BPF_LIB=
+else
+        libbpf_CFLAGS=$pkg_cv_libbpf_CFLAGS
+        libbpf_LIBS=$pkg_cv_libbpf_LIBS
+        { printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: yes" >&5
+printf "%s\n" "yes" >&6; }
+        BPF_LIB=-lbpf
+fi
+
+
+				{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking if we can enable iomap bpf overrides" >&5
+printf %s "checking if we can enable iomap bpf overrides... " >&6; }
+	if test -n "$VMLINUX_H_DIR" && test -n "$FUSE_INCLUDE_PATH" && test -n "$BPF_LIB"; then
+
+printf "%s\n" "#define HAVE_IOMAP_BPF 1" >>confdefs.h
+
+
+printf "%s\n" "#define VMLINUX_H_DIR \"$VMLINUX_H_DIR\"" >>confdefs.h
+
+
+printf "%s\n" "#define FUSE_INCLUDE_PATH \"$FUSE_INCLUDE_PATH\"" >>confdefs.h
+
+		have_iomap_bpf=yes
+
+		{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: yes" >&5
+printf "%s\n" "yes" >&6; }
+	else
+		have_iomap_bpf=
+		{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: no" >&5
+printf "%s\n" "no" >&6; }
+	fi
+fi
+
+
+if test "x$enable_bpf" = "xyes" && test -z "$have_iomap_bpf"; then
+	as_fn_error $? "cannot find bpf override library" "$LINENO" 5
 fi
 
 { printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking for setproctitle in -lbsd" >&5
