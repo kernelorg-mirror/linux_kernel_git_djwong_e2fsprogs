@@ -99,6 +99,9 @@
 /* Define to 1 if you have the 'chflags' function. */
 #undef HAVE_CHFLAGS
 
+/* Define to 1 if you have the 'close_range' function. */
+#undef HAVE_CLOSE_RANGE
+
 /* Define if the GNU dcgettext() function is already present or preinstalled.
    */
 #undef HAVE_DCGETTEXT
@@ -716,5 +719,14 @@
 
 /* Define to 1 if you have the 'setproctitle' function. */
 #undef HAVE_SETPROCTITLE
+
+/* Define to 1 if fuse iomap bpf present */
+#undef HAVE_IOMAP_BPF
+
+/* Location of vmlinux.h */
+#undef VMLINUX_H_DIR
+
+/* Location of fuse headers */
+#undef FUSE_INCLUDE_PATH
 
 #include <dirpaths.h>
