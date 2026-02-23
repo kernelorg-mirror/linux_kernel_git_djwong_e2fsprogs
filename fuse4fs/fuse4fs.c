@@ -7741,6 +7741,19 @@ static void try_set_io_flusher(struct fuse4fs *ff)
 #endif
 }
 
+/* Undo try_set_io_flusher */
+static void try_clear_io_flusher(struct fuse4fs *ff)
+{
+#ifdef HAVE_PR_SET_IO_FLUSHER
+	/*
+	 * zero ret means it's already set, negative means we can't even
+	 * look at the value so don't bother clearing it
+	 */
+	if (prctl(PR_GET_IO_FLUSHER, 0, 0, 0, 0) > 0)
+		prctl(PR_SET_IO_FLUSHER, 0, 0, 0, 0);
+#endif
+}
+
 /* Try to adjust the OOM score so that we don't get killed */
 static void try_adjust_oom_score(struct fuse4fs *ff)
 {
@@ -7846,12 +7859,27 @@ static int fuse4fs_main(struct fuse_args *args, struct fuse4fs *ff)
 	fuse_loop_cfg_set_idle_threads(loop_config, opts.max_idle_threads);
 	fuse_loop_cfg_set_max_threads(loop_config, 4);
 
-	if (fuse_session_loop_mt(se, loop_config) != 0) {
-		ret = 8;
-		goto out_loopcfg;
+	/*
+	 * Try to set ourselves up with fs reclaim disabled to prevent
+	 * recursive reclaim and throttling.  This must be done before starting
+	 * the worker threads so that they inherit the process flags.
+	 */
+	ret = fuse_lowlevel_disable_fsreclaim(ff->fuse, 1);
+	if (ret) {
+		err_printf(ff, "%s: %s.\n",
+ _("Could not register as FS flusher thread"),
+			   strerror(-ret));
+		try_set_io_flusher(ff);
+		ret = 0;
 	}
 
-out_loopcfg:
+	if (fuse_session_loop_mt(se, loop_config) != 0) {
+		ret = 8;
+		goto out_flusher;
+	}
+
+out_flusher:
+	try_clear_io_flusher(ff);
 	fuse_loop_cfg_destroy(loop_config);
 out_remove_signal_handlers:
 	fuse_remove_signal_handlers(se);
@@ -7929,7 +7957,6 @@ int main(int argc, char *argv[])
 		goto out;
 	}
 
-	try_set_io_flusher(&fctx);
 	try_adjust_oom_score(&fctx);
 
 	/* Will we allow users to allocate every last block? */
