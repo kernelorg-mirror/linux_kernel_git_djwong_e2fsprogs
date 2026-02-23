@@ -8010,6 +8010,19 @@ static void try_set_io_flusher(struct fuse4fs *ff)
 #endif
 }
 
+/* Undo try_set_io_flusher */
+static void try_clear_io_flusher(struct fuse4fs *ff)
+{
+#ifdef HAVE_PR_SET_IO_FLUSHER
+	/*
+	 * zero ret means it's already set, negative means we can't even
+	 * look at the value so don't bother clearing it
+	 */
+	if (prctl(PR_GET_IO_FLUSHER, 0, 0, 0, 0) > 0)
+		prctl(PR_SET_IO_FLUSHER, 0, 0, 0, 0);
+#endif
+}
+
 /* Try to adjust the OOM score so that we don't get killed */
 static void try_adjust_oom_score(struct fuse4fs *ff)
 {
@@ -8063,6 +8076,27 @@ static int fuse4fs_event_loop(struct fuse4fs *ff,
 			      struct fuse_loop_config *loop_config,
 			      const struct fuse_cmdline_opts *opts)
 {
+	bool clear_io_flusher = false;
+	int ret;
+
+#ifdef HAVE_FUSE_IOMAP
+	/*
+	 * Try to set ourselves up with fs reclaim disabled to prevent
+	 * recursive reclaim and throttling.  This must be done before starting
+	 * the worker threads so that they inherit the process flags.
+	 */
+	ret = fuse_lowlevel_disable_fsreclaim(ff->fuse, 1);
+	if (ret) {
+		err_printf(ff, "%s: %s.\n",
+ _("Could not register as FS flusher thread"),
+			   strerror(-ret));
+		try_set_io_flusher(ff);
+		clear_io_flusher = true;
+	}
+#else
+	try_set_io_flusher(ff);
+#endif
+
 	/*
 	 * Since there's a Big Kernel Lock around all the libext2fs code, we
 	 * only need to start four threads -- one to decode a request, another
@@ -8073,7 +8107,10 @@ static int fuse4fs_event_loop(struct fuse4fs *ff,
 	fuse_loop_cfg_set_idle_threads(loop_config, opts->max_idle_threads);
 	fuse_loop_cfg_set_max_threads(loop_config, 4);
 
-	return fuse_session_loop_mt(ff->fuse, loop_config) == 0 ? 0 : 8;
+	ret = fuse_session_loop_mt(ff->fuse, loop_config) == 0 ? 0 : 8;
+	if (clear_io_flusher)
+		try_clear_io_flusher(ff);
+	return ret;
 }
 
 #ifdef HAVE_FUSE4FS_SERVICE
@@ -8292,7 +8329,6 @@ int main(int argc, char *argv[])
 		}
 	}
 
-	try_set_io_flusher(&fctx);
 	try_adjust_oom_score(&fctx);
 
 	/* Will we allow users to allocate every last block? */
