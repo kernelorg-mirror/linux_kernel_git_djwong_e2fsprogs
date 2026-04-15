@@ -351,6 +351,15 @@ static inline bool fuse4fs_is_service(const struct fuse4fs *ff)
 # define fuse4fs_is_service(...)		(false)
 #endif
 
+#if defined(HAVE_FUSE4FS_SERVICE) && defined(HAVE_FUSE_IOMAP)
+static int fuse4fs_service_discover_iomap(struct fuse4fs *ff)
+{
+	return fuse_service_discover_iomap(ff->service);
+}
+#else
+# define fuse4fs_service_discover_iomap(...)	(0)
+#endif
+
 #define FUSE4FS_CHECK_HANDLE(req, fh) \
 	do { \
 		if ((fh) == NULL || (fh)->magic != FUSE4FS_FILE_MAGIC) { \
@@ -968,6 +977,11 @@ static inline void fuse4fs_discover_iomap(struct fuse4fs *ff)
 {
 	if (ff->iomap_want == FT_DISABLE)
 		return;
+
+	if (fuse4fs_is_service(ff)) {
+		ff->iomap_cap = fuse4fs_service_discover_iomap(ff);
+		return;
+	}
 
 	ff->iomap_cap = fuse_lowlevel_discover_iomap(-1);
 }
@@ -1599,6 +1613,30 @@ static errcode_t fuse4fs_service_openfs(struct fuse4fs *ff, char *options,
 # define fuse4fs_service_exit(fctx, ret)	(ret)
 # define fuse4fs_service_get_config(...)	(EOPNOTSUPP)
 # define fuse4fs_service_openfs(...)		(EOPNOTSUPP)
+#endif
+
+#if defined(HAVE_FUSE4FS_SERVICE) && defined(HAVE_FUSE_IOMAP)
+static int fuse4fs_service_configure_iomap(struct fuse4fs *ff)
+{
+	int error = 0;
+	int ret;
+
+	ret = fuse_service_configure_iomap(ff->service,
+					   ff->iomap_want == FT_ENABLE,
+					   &error);
+	if (ret)
+		return -1;
+
+	if (error) {
+		err_printf(ff, "%s: %s.\n", _("enabling iomap"),
+			   strerror(error));
+		return -1;
+	}
+
+	return 0;
+}
+#else
+# define fuse4fs_service_configure_iomap(...)	(EOPNOTSUPP)
 #endif
 
 static errcode_t fuse4fs_acquire_lockfile(struct fuse4fs *ff)
@@ -8125,6 +8163,16 @@ int main(int argc, char *argv[])
 			ret = 2;
 			goto out;
 		}
+
+#ifdef HAVE_FUSE_IOMAP
+		if (fctx.iomap_want != FT_DISABLE) {
+			ret = fuse4fs_service_configure_iomap(&fctx);
+			if (ret) {
+				ret = 2;
+				goto out;
+			}
+		}
+#endif
 	}
 
 	try_adjust_oom_score(&fctx);
