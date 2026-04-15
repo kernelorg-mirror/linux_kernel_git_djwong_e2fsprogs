@@ -6055,47 +6055,64 @@ static void fuse4fs_com_err_proc(const char *whoami, errcode_t code,
 	fflush(stderr);
 }
 
+static int fuse4fs_create_session(struct fuse4fs *ff, struct fuse_args *args,
+				  struct fuse_cmdline_opts *opts)
+{
+	if (ff->debug)
+		opts->debug = true;
+
+	if (opts->show_help) {
+		fuse_cmdline_help();
+		return 0;
+	}
+
+	if (opts->show_version) {
+		printf("FUSE library version %s\n", fuse_pkgversion());
+		return 0;
+	}
+
+	if (!opts->mountpoint) {
+		fprintf(stderr, "error: no mountpoint specified\n");
+		return 2;
+	}
+
+	ff->fuse = fuse_session_new(args, &fs_ops, sizeof(fs_ops), ff);
+	return ff->fuse ? 0 : 3;
+}
+
+static int fuse4fs_event_loop(struct fuse4fs *ff,
+			      struct fuse_loop_config *loop_config,
+			      const struct fuse_cmdline_opts *opts)
+{
+	/*
+	 * Since there's a Big Kernel Lock around all the libext2fs code, we
+	 * only need to start four threads -- one to decode a request, another
+	 * to do the filesystem work, a third to transmit the reply, and a
+	 * fourth to handle fuse notifications.
+	 */
+	fuse_loop_cfg_set_clone_fd(loop_config, opts->clone_fd);
+	fuse_loop_cfg_set_idle_threads(loop_config, opts->max_idle_threads);
+	fuse_loop_cfg_set_max_threads(loop_config, 4);
+
+	return fuse_session_loop_mt(ff->fuse, loop_config) == 0 ? 0 : 8;
+}
+
 static int fuse4fs_main(struct fuse_args *args, struct fuse4fs *ff)
 {
 	struct fuse_cmdline_opts opts;
-	struct fuse_session *se;
 	struct fuse_loop_config *loop_config = NULL;
-	int ret = 0;
+	int ret;
 
 	if (fuse_parse_cmdline(args, &opts) != 0) {
 		ret = 1;
 		goto out;
 	}
 
-	if (ff->debug)
-		opts.debug = true;
-
-	if (opts.show_help) {
-		fuse_cmdline_help();
-		ret = 0;
+	ret = fuse4fs_create_session(ff, args, &opts);
+	if (ret || !ff->fuse)
 		goto out_free_opts;
-	}
 
-	if (opts.show_version) {
-		printf("FUSE library version %s\n", fuse_pkgversion());
-		ret = 0;
-		goto out_free_opts;
-	}
-
-	if (!opts.mountpoint) {
-		fprintf(stderr, "error: no mountpoint specified\n");
-		ret = 2;
-		goto out_free_opts;
-	}
-
-	se = fuse_session_new(args, &fs_ops, sizeof(fs_ops), ff);
-	if (se == NULL) {
-		ret = 3;
-		goto out_free_opts;
-	}
-	ff->fuse = se;
-
-	if (fuse_session_mount(se, opts.mountpoint) != 0) {
+	if (fuse_session_mount(ff->fuse, opts.mountpoint) != 0) {
 		ret = 4;
 		goto out_destroy_session;
 	}
@@ -6115,7 +6132,7 @@ static int fuse4fs_main(struct fuse_args *args, struct fuse4fs *ff)
 		close(ff->logfd);
 	ff->logfd = -1;
 
-	if (fuse_set_signal_handlers(se) != 0) {
+	if (fuse_set_signal_handlers(ff->fuse) != 0) {
 		ret = 6;
 		goto out_unmount;
 	}
@@ -6126,30 +6143,16 @@ static int fuse4fs_main(struct fuse_args *args, struct fuse4fs *ff)
 		goto out_remove_signal_handlers;
 	}
 
-	/*
-	 * Since there's a Big Kernel Lock around all the libext2fs code, we
-	 * only need to start four threads -- one to decode a request, another
-	 * to do the filesystem work, a third to transmit the reply, and a
-	 * fourth to handle fuse notifications.
-	 */
-	fuse_loop_cfg_set_clone_fd(loop_config, opts.clone_fd);
-	fuse_loop_cfg_set_idle_threads(loop_config, opts.max_idle_threads);
-	fuse_loop_cfg_set_max_threads(loop_config, 4);
+	ret = fuse4fs_event_loop(ff, loop_config, &opts);
 
-	if (fuse_session_loop_mt(se, loop_config) != 0) {
-		ret = 8;
-		goto out_loopcfg;
-	}
-
-out_loopcfg:
 	fuse_loop_cfg_destroy(loop_config);
 out_remove_signal_handlers:
-	fuse_remove_signal_handlers(se);
+	fuse_remove_signal_handlers(ff->fuse);
 out_unmount:
-	fuse_session_unmount(se);
+	fuse_session_unmount(ff->fuse);
 out_destroy_session:
+	fuse_session_destroy(ff->fuse);
 	ff->fuse = NULL;
-	fuse_session_destroy(se);
 out_free_opts:
 	free(opts.mountpoint);
 out:
