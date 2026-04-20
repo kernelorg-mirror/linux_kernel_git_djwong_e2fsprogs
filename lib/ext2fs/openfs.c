@@ -148,6 +148,7 @@ errcode_t ext2fs_open2(const char *name, const char *io_options,
 	/* don't overwrite sb backups unless flag is explicitly cleared */
 	fs->flags |= EXT2_FLAG_MASTER_SB_ONLY;
 	fs->umask = 022;
+	fs->mmp_fd = -1;
 
 	time_env = ext2fs_safe_getenv("SOURCE_DATE_EPOCH");
 	if (time_env) {
