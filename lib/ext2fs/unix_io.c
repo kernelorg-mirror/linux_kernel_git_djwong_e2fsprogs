@@ -67,6 +67,7 @@
 #ifdef HAVE_SYS_FILE_H
 #include <sys/file.h>
 #endif
+#include <limits.h>
 
 #if defined(__linux__) && defined(_IO) && !defined(BLKROGET)
 #define BLKROGET   _IO(0x12, 94) /* Get read-only status (0 = read_write).  */
@@ -1148,13 +1149,40 @@ cleanup:
 	return retval;
 }
 
+#define DEV_FD_PATH	"/dev/fd/"
+#define DEV_FD_PATHLEN	(sizeof(DEV_FD_PATH) - 1)
+
+static int possible_unixfd_pathname(const char *path)
+{
+	return strncmp(DEV_FD_PATH, path, DEV_FD_PATHLEN) == 0;
+}
+
 static errcode_t unixfd_open(const char *str_fd, int flags,
 			     io_channel *channel)
 {
 	int fd;
 	int fd_flags;
 
-	fd = atoi(str_fd);
+	/*
+	 * The caller should provide a path in the form "/dev/fd/XX",
+	 * but the shorthand form "XX" is allowed for legacy reasons.
+	 */
+	if (possible_unixfd_pathname(str_fd)) {
+		char *endptr;
+		long maybe_fd;
+
+		errno = 0;
+		maybe_fd = strtol(str_fd + DEV_FD_PATHLEN, &endptr, 10);
+		if (errno)
+			return errno;
+		if (*endptr != 0)
+			return EINVAL;
+		if (maybe_fd < 0 || maybe_fd > INT_MAX)
+			return EINVAL;
+		fd = maybe_fd;
+	} else {
+		fd = atoi(str_fd);
+	}
 #if defined(HAVE_FCNTL)
 	fd_flags = fcntl(fd, F_GETFL);
 	if (fd_flags == -1)
