@@ -59,11 +59,11 @@ errcode_t ext2fs_mmp_read(ext2_filsys fs, blk64_t mmp_blk, void *buf)
 		return EXT2_ET_MMP_BAD_BLOCK;
 
 	/* ext2fs_open() reserves fd0,1,2 to avoid stdio collision, so checking
-	 * mmp_fd <= 0 is OK to validate that the fd is valid.  This opens its
+	 * mmp_fd < 0 is OK to validate that the fd is valid.  This opens its
 	 * own fd to read the MMP block to ensure that it is using O_DIRECT,
 	 * regardless of how the io_manager is doing reads, to avoid caching of
 	 * the MMP block by the io_manager or the VM.  It needs to be fresh. */
-	if (fs->mmp_fd <= 0) {
+	if (fs->mmp_fd < 0) {
 		struct stat st;
 		int flags = O_RDONLY | O_DIRECT;
 
@@ -427,7 +427,7 @@ errcode_t ext2fs_mmp_stop(ext2_filsys fs)
 	retval = ext2fs_mmp_write(fs, fs->super->s_mmp_block, fs->mmp_cmp);
 
 mmp_error:
-	if (fs->mmp_fd > 0) {
+	if (fs->mmp_fd >= 0) {
 		close(fs->mmp_fd);
 		fs->mmp_fd = -1;
 	}
