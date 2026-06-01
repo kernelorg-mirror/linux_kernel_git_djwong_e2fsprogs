@@ -42,6 +42,8 @@ HAVE_CROND = @have_crond@
 CROND_DIR = @crond_dir@
 HAVE_SYSTEMD = @have_systemd@
 SYSTEMD_SYSTEM_UNIT_DIR = @systemd_system_unit_dir@
+HAVE_FUSE_SERVICE = @have_fuse_service@
+HAVE_FUSE4FS_SERVICE = @have_fuse4fs_service@
 
 @SET_MAKE@
 

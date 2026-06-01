@@ -645,6 +645,7 @@ enable_year2038=no
 ac_subst_vars='LTLIBOBJS
 LIBOBJS
 OS_IO_FILE
+have_fuse4fs_service
 systemd_system_unit_dir
 have_systemd
 systemd_LIBS
@@ -697,6 +698,9 @@ UNI_DIFF_OPTS
 SEM_INIT_LIB
 FUSE4FS_CMT
 FUSE2FS_CMT
+fuse_service_socket_perms
+fuse_service_socket_dir
+have_fuse_service
 FUSE_LIB
 fuse3_LIBS
 fuse3_CFLAGS
@@ -929,6 +933,8 @@ with_libiconv_prefix
 with_libintl_prefix
 enable_largefile
 with_libarchive
+with_fuse_service_socket_dir
+with_fuse_service_socket_perms
 enable_fuse2fs
 enable_fuse4fs
 enable_lto
@@ -1652,6 +1658,11 @@ Optional Packages:
   --with-libintl-prefix[=DIR]  search for libintl in DIR/include and DIR/lib
   --without-libintl-prefix     don't search for libintl in includedir and libdir
   --without-libarchive    disable use of libarchive
+  --with-fuse-service-socket-dir[=DIR]
+                          Create fuse3 filesystem service sockets in DIR.
+  --with-fuse-service-socket-perms[=MODE]
+                          Create fuse3 filesystem service socket with these
+                          permissions.
   --with-multiarch=ARCH   specify the multiarch triplet
   --with-udev-rules-dir[=DIR]
                           Install udev rules into DIR.
@@ -14610,7 +14621,7 @@ else
         fuse3_LIBS=$pkg_cv_fuse3_LIBS
         { printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: yes" >&5
 printf "%s\n" "yes" >&6; }
-        FUSE_LIB=-lfuse3
+        FUSE_LIB=-lfuse3 ; have_fuse3_pkg=yes
 fi
 
 
@@ -14689,6 +14700,155 @@ if test -n "$have_fuse_lowlevel"
 then
 
 printf "%s\n" "#define HAVE_FUSE_LOWLEVEL 1" >>confdefs.h
+
+fi
+
+have_fuse_service=
+fuse_service_socket_dir=
+if test -n "$have_fuse_lowlevel"
+then
+
+# Check whether --with-fuse_service_socket_dir was given.
+if test ${with_fuse_service_socket_dir+y}
+then :
+  withval=$with_fuse_service_socket_dir;
+else case e in #(
+  e) with_fuse_service_socket_dir=yes ;;
+esac
+fi
+
+	if test "x${with_fuse_service_socket_dir}" != "xno"
+then :
+
+		if test "x${with_fuse_service_socket_dir}" = "xyes"
+then :
+
+			if test "x$have_fuse3_pkg" = "xyes"
+then :
+
+				with_fuse_service_socket_dir="$($PKG_CONFIG --variable=service_socket_dir fuse3)"
+
+else case e in #(
+  e)
+				with_fuse_service_socket_dir=""
+			   ;;
+esac
+fi
+
+fi
+		{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking for fuse3 service socket dir" >&5
+printf %s "checking for fuse3 service socket dir... " >&6; }
+		fuse_service_socket_dir="${with_fuse_service_socket_dir}"
+		if test -n "${fuse_service_socket_dir}"
+then :
+
+			{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: ${fuse_service_socket_dir}" >&5
+printf "%s\n" "${fuse_service_socket_dir}" >&6; }
+
+else case e in #(
+  e)
+			{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: no" >&5
+printf "%s\n" "no" >&6; }
+		   ;;
+esac
+fi
+
+fi
+
+# Check whether --with-fuse_service_socket_perms was given.
+if test ${with_fuse_service_socket_perms+y}
+then :
+  withval=$with_fuse_service_socket_perms;
+else case e in #(
+  e) with_fuse_service_socket_perms=yes ;;
+esac
+fi
+
+	if test "x${with_fuse_service_socket_perms}" != "xno"
+then :
+
+		if test "x${with_fuse_service_socket_perms}" = "xyes"
+then :
+
+			if test "x$have_fuse3_pkg" = "xyes"
+then :
+
+				with_fuse_service_socket_perms="$($PKG_CONFIG --variable=service_socket_perms fuse3)"
+
+else case e in #(
+  e)
+				with_fuse_service_socket_perms=""
+			   ;;
+esac
+fi
+
+fi
+		fuse_service_socket_perms="${with_fuse_service_socket_perms}"
+
+fi
+fi
+if test -n "$FUSE_USE_VERSION"
+then
+	{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking for fuse_service_accept in libfuse" >&5
+printf %s "checking for fuse_service_accept in libfuse... " >&6; }
+	cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+
+	#define _GNU_SOURCE
+	#define _FILE_OFFSET_BITS	64
+	#define FUSE_USE_VERSION	319
+	#include <fuse_lowlevel.h>
+	#include <fuse_service.h>
+
+int
+main (void)
+{
+
+	struct fuse_service *moo;
+	fuse_service_accepted(moo);
+
+  ;
+  return 0;
+}
+
+_ACEOF
+if ac_fn_c_try_link "$LINENO"
+then :
+  have_fuse_service_accept=yes
+	   { printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: yes" >&5
+printf "%s\n" "yes" >&6; }
+else case e in #(
+  e) { printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: no" >&5
+printf "%s\n" "no" >&6; } ;;
+esac
+fi
+rm -f core conftest.err conftest.$ac_objext conftest.beam \
+    conftest$ac_exeext conftest.$ac_ext
+
+	{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking for fuse3 service support" >&5
+printf %s "checking for fuse3 service support... " >&6; }
+	if test -n "${fuse_service_socket_dir}" && test "${have_fuse_service_accept}" = "yes"
+then :
+
+		{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: yes" >&5
+printf "%s\n" "yes" >&6; }
+		have_fuse_service="yes"
+
+else case e in #(
+  e)
+		{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: no" >&5
+printf "%s\n" "no" >&6; }
+	   ;;
+esac
+fi
+fi
+
+
+
+if test "$have_fuse_service" = yes
+then
+
+printf "%s\n" "#define HAVE_FUSE_SERVICE 1" >>confdefs.h
 
 fi
 
@@ -16603,6 +16763,30 @@ else case e in #(
   e)
 	have_systemd="disabled"
    ;;
+esac
+fi
+
+
+
+{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking for fuse4fs service support and systemd" >&5
+printf %s "checking for fuse4fs service support and systemd... " >&6; }
+if test "${FUSE4FS_CMT}${have_fuse_service}${have_systemd}" = "yesyes"
+then :
+
+           { printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: yes" >&5
+printf "%s\n" "yes" >&6; }
+
+printf "%s\n" "#define HAVE_FUSE4FS_SERVICE 1" >>confdefs.h
+
+           have_fuse4fs_service=yes
+
+else case e in #(
+  e)
+           { printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: no" >&5
+printf "%s\n" "no" >&6; }
+           have_fuse4fs_service=no
+
+ ;;
 esac
 fi
 
