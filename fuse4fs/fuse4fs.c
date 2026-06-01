@@ -60,6 +60,7 @@
 #include "support/thread.h"
 #include "support/list.h"
 #include "support/cache.h"
+#include "support/iocache.h"
 
 #include "../version.h"
 #include "uuid/uuid.h"
@@ -1434,13 +1435,15 @@ static errcode_t fuse4fs_service_openfs(struct fuse4fs *ff, char *options,
 	if (ret)
 		return errno;
 
+	iocache_set_backing_manager(unixfd_io_manager);
+
 	/*
 	 * Open the filesystem with SKIP_MMP so that we can find out if the
 	 * filesystem actually has MMP.
 	 */
 	snprintf(path, sizeof(path), "/dev/fd/%d", ff->bdev_fd);
 	retval = ext2fs_open2(path, options, *flags | EXT2_FLAG_SKIP_MMP, 0, 0,
-			      unixfd_io_manager, &ff->fs);
+			      iocache_io_manager, &ff->fs);
 	if (retval)
 		return retval;
 
@@ -1473,7 +1476,7 @@ static errcode_t fuse4fs_service_openfs(struct fuse4fs *ff, char *options,
 		*flags |= EXT2_FLAG_DIRECT_IO;
 	}
 
-	return ext2fs_open2(path, options, *flags, 0, 0, unixfd_io_manager,
+	return ext2fs_open2(path, options, *flags, 0, 0, iocache_io_manager,
 			    &ff->fs);
 }
 #else
@@ -1581,6 +1584,8 @@ static errcode_t fuse4fs_open(struct fuse4fs *ff)
 	if (ff->directio)
 		flags |= EXT2_FLAG_DIRECT_IO;
 
+	iocache_set_backing_manager(unix_io_manager);
+
 	/*
 	 * If the filesystem is stored on a block device, the _EXCLUSIVE flag
 	 * causes libext2fs to try to open the block device with O_EXCL.  If
@@ -1616,7 +1621,7 @@ static errcode_t fuse4fs_open(struct fuse4fs *ff)
 			err = fuse4fs_service_openfs(ff, options, &flags);
 		else
 			err = ext2fs_open2(ff->device, options, flags, 0, 0,
-					   unix_io_manager, &ff->fs);
+					   iocache_io_manager, &ff->fs);
 		if ((err == EPERM || err == EACCES) &&
 		    (!ff->ro || (flags & EXT2_FLAG_RW))) {
 			/*
