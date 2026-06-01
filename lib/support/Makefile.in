@@ -15,6 +15,7 @@ all::
 
 OBJS=		bthread.o \
 		cstring.o \
+		iocache.o \
 		mkquota.o \
 		plausible.o \
 		profile.o \
@@ -46,7 +47,8 @@ SRCS=		$(srcdir)/argv_parse.c \
 		$(srcdir)/thread.c \
 		$(srcdir)/dict.c \
 		$(srcdir)/devname.c \
-		$(srcdir)/cache.c
+		$(srcdir)/cache.c \
+		$(srcdir)/iocache.c
 
 LIBRARY= libsupport
 LIBDIR= support
@@ -200,3 +202,5 @@ devname.o: $(srcdir)/devname.c $(top_builddir)/lib/config.h \
  $(top_builddir)/lib/dirpaths.h $(srcdir)/devname.h $(srcdir)/nls-enable.h
 cache.o: $(srcdir)/cache.c $(top_builddir)/lib/config.h \
  $(top_builddir)/lib/dirpaths.h $(srcdir)/list.h $(srcdir)/cache.h
+iocache.o: $(srcdir)/iocache.c $(top_builddir)/lib/config.h \
+ $(srcdir)/iocache.h $(srcdir)/cache.h $(srcdir)/list.h
