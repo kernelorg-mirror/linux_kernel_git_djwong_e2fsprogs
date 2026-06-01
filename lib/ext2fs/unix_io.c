@@ -132,10 +132,13 @@ struct unix_cache {
 #define WRITE_DIRECT_SIZE 4	/* Must be smaller than CACHE_SIZE */
 #define READ_DIRECT_SIZE 4	/* Should be smaller than CACHE_SIZE */
 
+#define UNIX_STATE_DIRTY	(1U << 0) /* device needs fsyncing */
+
 struct unix_private_data {
 	int	magic;
 	int	dev;
 	int	flags;
+	unsigned int	state; /* UNIX_STATE_* */
 	int	align;
 	int	access_time;
 	int	unix_flock_flags;
@@ -1198,10 +1201,65 @@ static errcode_t unix_open(const char *name, int flags,
 	return unix_open_channel(name, fd, flags, channel, unix_io_manager);
 }
 
+#ifdef HAVE_FSYNC
+static void mark_dirty(io_channel channel)
+{
+	struct unix_private_data *data =
+		(struct unix_private_data *) channel->private_data;
+
+	mutex_lock(data, CACHE_MTX);
+	data->state |= UNIX_STATE_DIRTY;
+	mutex_unlock(data, CACHE_MTX);
+}
+
+static errcode_t maybe_fsync(io_channel channel, int force_fsync)
+{
+	struct unix_private_data *data =
+		(struct unix_private_data *) channel->private_data;
+	int need_fsync;
+	errcode_t retval = 0;
+
+#ifndef NO_IO_CACHE
+	retval = flush_cached_blocks(channel, data, 0);
+#endif
+
+	mutex_lock(data, CACHE_MTX);
+	need_fsync = force_fsync || (data->state & UNIX_STATE_DIRTY);
+	data->state &= ~UNIX_STATE_DIRTY;
+	mutex_unlock(data, CACHE_MTX);
+
+	if (need_fsync && fsync(data->dev) != 0) {
+		if (!retval)
+			retval = errno;
+	}
+	if (retval) {
+		/* redirty because writeback failed */
+		mark_dirty(channel);
+		return retval;
+	}
+
+	return 0;
+}
+#else
+# define mark_dirty(...)		((void)0)
+
+static errcode_t maybe_fsync(io_channel channel, int force_fsync)
+{
+	struct unix_private_data *data =
+		(struct unix_private_data *) channel->private_data;
+	errcode_t retval = 0;
+
+#ifndef NO_IO_CACHE
+	retval = flush_cached_blocks(channel, data, 0);
+#endif
+	return retval;
+}
+#endif
+
 static errcode_t unix_close(io_channel channel)
 {
 	struct unix_private_data *data;
-	errcode_t	retval = 0;
+	errcode_t	retval;
 
 	EXT2_CHECK_MAGIC(channel, EXT2_ET_MAGIC_IO_CHANNEL);
 	data = (struct unix_private_data *) channel->private_data;
@@ -1210,14 +1268,7 @@ static errcode_t unix_close(io_channel channel)
 	if (--channel->refcount > 0)
 		return 0;
 
-#ifndef NO_IO_CACHE
-	retval = flush_cached_blocks(channel, data, 0);
-#endif
-#ifdef HAVE_FSYNC
-	/* always fsync the device, even if flushing our own cache failed */
-	if (fsync(data->dev) != 0 && !retval)
-		retval = errno;
-#endif
+	retval = maybe_fsync(channel, 1);
 
 	unix_funlock(channel);
 
@@ -1388,6 +1439,8 @@ static errcode_t unix_write_blk64(io_channel channel, unsigned long long block,
 	data = (struct unix_private_data *) channel->private_data;
 	EXT2_CHECK_MAGIC(data, EXT2_ET_MAGIC_UNIX_IO_CHANNEL);
 
+	mark_dirty(channel);
+
 #ifdef NO_IO_CACHE
 	return raw_write_blk(channel, data, block, count, buf, 0);
 #else
@@ -1512,6 +1565,8 @@ static errcode_t unix_write_byte(io_channel channel, unsigned long offset,
 	if (lseek(data->dev, offset + data->offset, SEEK_SET) < 0)
 		return errno;
 
+	mark_dirty(channel);
+
 	actual = write(data->dev, buf, size);
 	if (actual < 0)
 		return errno;
@@ -1527,21 +1582,12 @@ static errcode_t unix_write_byte(io_channel channel, unsigned long offset,
 static errcode_t unix_flush(io_channel channel)
 {
 	struct unix_private_data *data;
-	errcode_t retval = 0;
 
 	EXT2_CHECK_MAGIC(channel, EXT2_ET_MAGIC_IO_CHANNEL);
 	data = (struct unix_private_data *) channel->private_data;
 	EXT2_CHECK_MAGIC(data, EXT2_ET_MAGIC_UNIX_IO_CHANNEL);
 
-#ifndef NO_IO_CACHE
-	retval = flush_cached_blocks(channel, data, 0);
-#endif
-#ifdef HAVE_FSYNC
-	/* always fsync the device, even if flushing our own cache failed */
-	if (fsync(data->dev) != 0 && !retval)
-		return errno;
-#endif
-	return retval;
+	return maybe_fsync(channel, 0);
 }
 
 static errcode_t unix_set_option(io_channel channel, const char *option,
@@ -1653,6 +1699,7 @@ static errcode_t unix_discard(io_channel channel, unsigned long long block,
 		}
 		return errno;
 	}
+	mark_dirty(channel);
 	return 0;
 unimplemented:
 	return EXT2_ET_UNIMPLEMENTED;
@@ -1734,6 +1781,7 @@ err:
 		}
 		return errno;
 	}
+	mark_dirty(channel);
 	return 0;
 unimplemented:
 	return EXT2_ET_UNIMPLEMENTED;
