@@ -26,9 +26,11 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <limits.h>
 
 #include "ext2fs/ext2_fs.h"
 #include "ext2fs/ext2fs.h"
+#include "ext2fs/ext2fsP.h"
 
 #ifndef O_DIRECT
 #define O_DIRECT 0
@@ -47,6 +49,86 @@ errcode_t ext2fs_mmp_get_mem(ext2_filsys fs, void **ptr)
 
 	return ext2fs_get_memalign(fs->blocksize, align, ptr);
 }
+
+#ifdef _WIN32
+static int ext2fs_mmp_open_device(ext2_filsys fs, int flags)
+{
+	return open(fs->device_name, flags);
+}
+#else
+static int ext2fs_mmp_open_device(ext2_filsys fs, int flags)
+{
+	struct stat stbuf;
+	char path[64];
+	int maybe_fd = -1;
+	int new_fd;
+	int ret;
+	errcode_t retval = 0;
+
+	/*
+	 * If we can't possibly be using the unixfd IO manager, open the device
+	 * a second time, which is the historical behavior.  This is a huge
+	 * and historic layering violation!
+	 *
+	 * It's also broken if the unixfd IO manager was passed a string with a
+	 * file descriptor number instead of a /dev/fd/XX path, but the
+	 * internet thinks there are no users of the manager outside of Google.
+	 */
+	if (!possible_unixfd_pathname(fs->device_name))
+		return open(fs->device_name, flags);
+
+	/*
+	 * Try to get the fd of the open block device.  If this fails for any
+	 * reason, fall back to the classic open path.
+	 */
+	retval = io_channel_get_fd(fs->io, &maybe_fd);
+	if (retval || maybe_fd < 0)
+		return open(fs->device_name, flags);
+
+	/*
+	 * We extracted the fd from the IO manager.
+	 *
+	 * Skip directio if this is a regular file, just ext2fs_mmp_read does.
+	 * Note that the O_DIRECT-clearing logic in the caller might not have
+	 * cleared the bit because it is path based.
+	 */
+	if (fstat(maybe_fd, &stbuf) == 0 && S_ISREG(stbuf.st_mode))
+		flags &= ~O_DIRECT;
+
+	/*
+	 * Try to reopen the same file descriptor, but with the new mode flags.
+	 * If that works then we're done.  Note that these magic symlinks do
+	 * not have to resolve anywhere.
+	 */
+	snprintf(path, sizeof(path), "/dev/fd/%d", maybe_fd);
+	new_fd = open(path, flags);
+	if (new_fd >= 0)
+		return new_fd;
+
+	/*
+	 * Reopening didn't work.  Instead, duplicate the file descriptor and
+	 * check that we actually got directio if that's required.  Note that
+	 * we can't change the mode on the IO channel's fd because we already
+	 * set it up for buffered IO.
+	 */
+	new_fd = dup(maybe_fd);
+	if (flags & O_DIRECT) {
+		ret = fcntl(new_fd, F_GETFL);
+		if (ret < 0 || !(ret & O_DIRECT)) {
+			close(new_fd);
+			return -1;
+		}
+	}
+
+	/*
+	 * The MMP fd shadows the io channel fd, so we must use that for all
+	 * MMP block accesses because the two fds share the same file position
+	 * and O_DIRECT state, and the iochannel must know about that.
+	 */
+	fs->flags2 |= EXT2_FLAG2_MMP_USE_IOCHANNEL;
+	return new_fd;
+}
+#endif
 
 errcode_t ext2fs_mmp_read(ext2_filsys fs, blk64_t mmp_blk, void *buf)
 {
@@ -77,7 +159,7 @@ errcode_t ext2fs_mmp_read(ext2_filsys fs, blk64_t mmp_blk, void *buf)
 		    S_ISREG(st.st_mode))
 			flags &= ~O_DIRECT;
 
-		fs->mmp_fd = open(fs->device_name, flags);
+		fs->mmp_fd = ext2fs_mmp_open_device(fs, flags);
 		if (fs->mmp_fd < 0) {
 			retval = EXT2_ET_MMP_OPEN_DIRECT;
 			goto out;
@@ -88,6 +170,15 @@ errcode_t ext2fs_mmp_read(ext2_filsys fs, blk64_t mmp_blk, void *buf)
 		retval = ext2fs_mmp_get_mem(fs, &fs->mmp_cmp);
 		if (retval)
 			return retval;
+	}
+
+	if (fs->flags2 & EXT2_FLAG2_MMP_USE_IOCHANNEL) {
+		retval = io_channel_read_blk64(fs->io, mmp_blk, -fs->blocksize,
+					       fs->mmp_cmp);
+		if (retval)
+			return retval;
+
+		goto read_compare;
 	}
 
 	if ((blk64_t) ext2fs_llseek(fs->mmp_fd, mmp_blk * fs->blocksize,
@@ -102,6 +193,7 @@ errcode_t ext2fs_mmp_read(ext2_filsys fs, blk64_t mmp_blk, void *buf)
 		goto out;
 	}
 
+read_compare:
 	mmp_cmp = fs->mmp_cmp;
 
 	if (!(fs->flags & EXT2_FLAG_IGNORE_CSUM_ERRORS) &&
@@ -428,6 +520,7 @@ errcode_t ext2fs_mmp_stop(ext2_filsys fs)
 
 mmp_error:
 	if (fs->mmp_fd >= 0) {
+		fs->flags2 &= ~EXT2_FLAG2_MMP_USE_IOCHANNEL;
 		close(fs->mmp_fd);
 		fs->mmp_fd = -1;
 	}
