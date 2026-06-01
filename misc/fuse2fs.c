@@ -49,6 +49,9 @@
 #include "ext2fs/ext2fsP.h"
 #include "support/bthread.h"
 #include "support/thread.h"
+#include "support/list.h"
+#include "support/cache.h"
+#include "support/iocache.h"
 
 #include "../version.h"
 #include "uuid/uuid.h"
@@ -1176,6 +1179,8 @@ static errcode_t fuse2fs_open(struct fuse2fs *ff)
 	if (ff->directio)
 		flags |= EXT2_FLAG_DIRECT_IO;
 
+	iocache_set_backing_manager(unix_io_manager);
+
 	/*
 	 * If the filesystem is stored on a block device, the _EXCLUSIVE flag
 	 * causes libext2fs to try to open the block device with O_EXCL.  If
@@ -1208,7 +1213,7 @@ static errcode_t fuse2fs_open(struct fuse2fs *ff)
 	deadline = init_deadline(FUSE2FS_OPEN_TIMEOUT);
 	do {
 		err = ext2fs_open2(ff->device, options, flags, 0, 0,
-				   unix_io_manager, &ff->fs);
+				   iocache_io_manager, &ff->fs);
 		if ((err == EPERM || err == EACCES) &&
 		    (!ff->ro || (flags & EXT2_FLAG_RW))) {
 			/*
