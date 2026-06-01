@@ -45,6 +45,9 @@
 #ifdef HAVE_FUSE4FS_SERVICE
 # include <sys/mount.h>
 # include <fuse_service.h>
+# ifdef HAVE_SETPROCTITLE
+#  include <bsd/unistd.h>
+# endif
 #endif
 #ifdef __SET_FOB_FOR_FUSE
 # undef _FILE_OFFSET_BITS
@@ -295,6 +298,9 @@ struct fuse4fs {
 	struct cache inodes;
 #ifdef HAVE_FUSE4FS_SERVICE
 	struct fuse_service *service;
+# ifdef HAVE_SETPROCTITLE
+	char *svc_cmdline;
+# endif
 	int bdev_fd;
 #endif
 };
@@ -1291,6 +1297,35 @@ static errcode_t fuse4fs_check_support(struct fuse4fs *ff)
 	return 0;
 }
 
+#if defined(HAVE_FUSE4FS_SERVICE) && defined(HAVE_SETPROCTITLE)
+static void fuse4fs_service_set_proc_cmdline(struct fuse4fs *ff, int argc,
+					     char *argv[],
+					     struct fuse_args *args)
+{
+#ifdef HAVE_SETPROCTITLE_INIT
+	setproctitle_init(argc, argv, environ);
+#endif
+
+	ff->svc_cmdline = fuse_service_cmdline(argc, (const char * const *)argv, args);
+	if (!ff->svc_cmdline)
+		return;
+
+	setproctitle("-%s", ff->svc_cmdline);
+}
+
+static void fuse4fs_service_finish_proc_cmdline(struct fuse4fs *ff)
+{
+	if (!ff->svc_cmdline)
+		return;
+
+	setproctitle("-%s [cleaning up]", ff->svc_cmdline);
+	free(ff->svc_cmdline);
+}
+#else
+# define fuse4fs_service_set_proc_cmdline(...)		((void)0)
+# define fuse4fs_service_finish_proc_cmdline(...)	((void)0)
+#endif
+
 #ifdef HAVE_FUSE4FS_SERVICE
 static int fuse4fs_service_connect(struct fuse4fs *ff, struct fuse_args *args)
 {
@@ -1323,6 +1358,8 @@ static int fuse4fs_service_exit(struct fuse4fs *ff, int exitcode)
 {
 	if (!fuse4fs_is_service(ff))
 		return exitcode;
+
+	fuse4fs_service_finish_proc_cmdline(ff);
 
 	fuse_service_send_goodbye(ff->service, exitcode);
 	fuse_service_release(ff->service);
@@ -6394,6 +6431,16 @@ int main(int argc, char *argv[])
 		ret = 1;
 		goto out_exit;
 	}
+
+	/*
+	 * For fuse services, make the /proc title include the arguments that
+	 * we got from the mount helper.  Do this before parsing argc/argv
+	 * because that may overwrite the argv area.  Note that the procfs
+	 * listing might not reflect the options that actually get enabled,
+	 * just like regular fuse4fs.
+	 */
+	if (fuse4fs_is_service(&fctx))
+		fuse4fs_service_set_proc_cmdline(&fctx, argc, argv, &args);
 
 	ret = fuse_opt_parse(&args, &fctx, fuse4fs_opts, fuse4fs_opt_proc);
 	if (ret)
