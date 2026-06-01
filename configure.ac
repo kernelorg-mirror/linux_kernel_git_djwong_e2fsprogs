@@ -1384,17 +1384,17 @@ AC_SUBST(FUSE_LIB)
 
 dnl
 dnl Set FUSE_USE_VERSION, which is how fuse servers build against a particular
-dnl libfuse ABI.  Currently we link against the libfuse 3.14 ABI (hence 314)
+dnl libfuse ABI.  Currently we link against the libfuse 3.19 ABI (hence 319)
 dnl
 if test -n "$FUSE_LIB"
 then
-	FUSE_USE_VERSION=314
+	FUSE_USE_VERSION=319
 	CFLAGS="$fuse3_CFLAGS $CFLAGS"
 	FUSE_LIB="$fuse3_LIBS"
 	AC_CHECK_HEADERS([pthread.h fuse.h], [],
 		[AC_MSG_FAILURE([Cannot build against fuse3 headers])],
 [#define _FILE_OFFSET_BITS	64
-#define FUSE_USE_VERSION	314])
+#define FUSE_USE_VERSION	319])
 fi
 if test -n "$FUSE_USE_VERSION"
 then
@@ -1413,7 +1413,7 @@ then
 	[	AC_LANG_PROGRAM([[
 	#define _GNU_SOURCE
 	#define _FILE_OFFSET_BITS	64
-	#define FUSE_USE_VERSION	314
+	#define FUSE_USE_VERSION	319
 	#include <fuse_lowlevel.h>
 		]], [[
 	struct fuse_lowlevel_ops fs_ops = { };
@@ -1515,7 +1515,7 @@ then
 	[	AC_LANG_PROGRAM([[
 	#define _GNU_SOURCE
 	#define _FILE_OFFSET_BITS	64
-	#define FUSE_USE_VERSION	314
+	#define FUSE_USE_VERSION	319
 	#include <fuse.h>
 		]], [[
 	struct fuse_file_info fs_ops = {
