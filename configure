@@ -14616,14 +14616,14 @@ fi
 
 if test -n "$FUSE_LIB"
 then
-	FUSE_USE_VERSION=314
+	FUSE_USE_VERSION=319
 	CFLAGS="$fuse3_CFLAGS $CFLAGS"
 	FUSE_LIB="$fuse3_LIBS"
 	       for ac_header in pthread.h fuse.h
 do :
   as_ac_Header=`printf "%s\n" "ac_cv_header_$ac_header" | sed "$as_sed_sh"`
 ac_fn_c_check_header_compile "$LINENO" "$ac_header" "$as_ac_Header" "#define _FILE_OFFSET_BITS	64
-#define FUSE_USE_VERSION	314
+#define FUSE_USE_VERSION	319
 "
 if eval test \"x\$"$as_ac_Header"\" = x"yes"
 then :
@@ -14658,7 +14658,7 @@ printf %s "checking for lowlevel interface in libfuse... " >&6; }
 
 	#define _GNU_SOURCE
 	#define _FILE_OFFSET_BITS	64
-	#define FUSE_USE_VERSION	314
+	#define FUSE_USE_VERSION	319
 	#include <fuse_lowlevel.h>
 
 int
@@ -14838,7 +14838,7 @@ printf %s "checking for cache_readdir support in libfuse... " >&6; }
 
 	#define _GNU_SOURCE
 	#define _FILE_OFFSET_BITS	64
-	#define FUSE_USE_VERSION	314
+	#define FUSE_USE_VERSION	319
 	#include <fuse.h>
 
 int
