@@ -4,6 +4,12 @@
 
 #include <stdbool.h>
 
+#ifdef __GNUC__
+#define EXT2FS_ATTR(x) __attribute__(x)
+#else
+#define EXT2FS_ATTR(x)
+#endif
+
 struct list_head {
 	struct list_head *next, *prev;
 };
