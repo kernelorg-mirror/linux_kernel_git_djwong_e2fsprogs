@@ -149,7 +149,7 @@ static errcode_t ext2fs_punch_ind(ext2_filsys fs, struct ext2_inode *inode,
 					   start, count, num);
 			if (retval)
 				goto errout;
-			if (count > max)
+			if (count > max - start)
 				count -= max - start;
 			else
 				break;
